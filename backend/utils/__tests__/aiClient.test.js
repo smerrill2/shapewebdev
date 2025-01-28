@@ -1,102 +1,232 @@
-const { looksLikeCode, splitMixedContent, extractComponentName } = require('../aiClient');
+const { TextEncoder, TextDecoder } = require('util');
+global.TextEncoder = TextEncoder;
+global.TextDecoder = TextDecoder;
 
-describe('aiClient Parser', () => {
-  describe('looksLikeCode', () => {
-    test('identifies component markers', () => {
-      const context = {};
-      const result = looksLikeCode('/* Component: HeroSection */', context);
-      expect(result).toBe(true);
-      expect(context.metadata.componentName).toBe('HeroSection');
-    });
+const { EventEmitter } = require('events');
+const { Readable } = require('stream');
 
-    test('identifies design/planning content', () => {
-      const context = {};
-      expect(looksLikeCode('Design Vision: Create a modern landing page')).toBe(false);
-      expect(looksLikeCode('Planned Components: Hero, Features')).toBe(false);
-    });
+// Mock the Anthropic SDK before requiring aiClient
+const mockCreate = jest.fn();
+jest.mock('@anthropic-ai/sdk', () => ({
+  Anthropic: jest.fn().mockImplementation(() => ({
+    messages: {
+      create: mockCreate
+    }
+  }))
+}));
 
-    test('detects dependencies', () => {
-      const context = {};
-      const result = looksLikeCode(`
-        import React from 'react';
-        import { Button } from './ui/button';
-      `, context);
-      expect(result).toBe(true);
-      expect(context.metadata.hasDependencies).toBe(true);
-      expect(context.metadata.dependencies).toContain('react');
-    });
+// Now require aiClient after mocking
+const { generate } = require('../aiClient');
 
-    test('identifies JSX patterns', () => {
-      const context = {};
-      const result = looksLikeCode(`
-        return (
-          <div className="hero">
-            <h1>{title}</h1>
-          </div>
-        );
-      `, context);
-      expect(result).toBe(true);
-      expect(context.metadata.hasJSX).toBe(true);
+class MockEventStream extends EventEmitter {
+  constructor(events) {
+    super();
+    this.events = events;
+    this.destroyed = false;
+  }
+
+  start() {
+    if (this.destroyed) return;
+    
+    // Process events synchronously
+    process.nextTick(() => {
+      for (const event of this.events) {
+        if (this.destroyed) break;
+        // Format as SSE
+        this.emit('data', Buffer.from(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      
+      if (!this.destroyed) {
+        this.emit('end');
+      }
     });
+  }
+
+  destroy() {
+    this.destroyed = true;
+  }
+}
+
+describe('AI Client', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
   });
 
-  describe('splitMixedContent', () => {
-    test('separates thoughts from code', () => {
-      const result = splitMixedContent(`
-        Let's create a hero section with a gradient background.
-        /* Component: HeroSection */
-        export const HeroSection = () => {
-          return <div>Hero Content</div>;
+  it('should correctly process multiple components and their metadata', async () => {
+    const mockEvents = [
+      { type: 'message_start' },
+      {
+        type: 'content_block_start',
+        metadata: {
+          componentName: 'Header',
+          position: 'header',
+          componentId: 'comp_header'
         }
-      `);
-      expect(result.thoughts).toBeTruthy();
-      expect(result.code).toContain('Component: HeroSection');
-      expect(result.metadata.componentName).toBe('HeroSection');
-    });
-
-    test('identifies planning sections', () => {
-      const result = splitMixedContent(`
-        Design Vision:
-        - Modern and clean interface
-        - Gradient backgrounds
-        - Smooth animations
-      `);
-      expect(result.metadata.type).toBe('planning');
-      expect(result.thoughts).toBeTruthy();
-      expect(result.code).toBeNull();
-    });
-
-    test('handles pure code blocks', () => {
-      const result = splitMixedContent(`
-        /* Component: FeatureGrid */
-        export const FeatureGrid = () => {
-          return <div>Features</div>;
+      },
+      {
+        type: 'content_block_delta',
+        delta: { text: 'export function Header() {...}' },
+        metadata: {
+          componentName: 'Header',
+          position: 'header',
+          componentId: 'comp_header'
         }
-      `);
-      expect(result.thoughts).toBe('');
-      expect(result.code).toBeTruthy();
-      expect(result.metadata.type).toBe('component');
+      },
+      {
+        type: 'content_block_stop',
+        metadata: {
+          componentName: 'Header',
+          componentId: 'comp_header',
+          isComplete: true
+        }
+      },
+      { type: 'message_stop' }
+    ];
+
+    const mockStream = new MockEventStream(mockEvents);
+    mockCreate.mockResolvedValue({ data: mockStream });
+
+    const stream = await generate('Create a test component', 'modern', '');
+    const receivedEvents = [];
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout waiting for events'));
+      }, 5000);
+
+      stream.on('data', (data) => {
+        const eventStr = data.toString();
+        if (eventStr.startsWith('data: ')) {
+          try {
+            const eventData = JSON.parse(eventStr.slice(6).trim());
+            receivedEvents.push(eventData);
+            if (receivedEvents.length === mockEvents.length) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          } catch (e) {
+            console.error('Failed to parse event:', eventStr, e);
+          }
+        }
+      });
+
+      stream.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      // Start the stream after setting up handlers
+      mockStream.start();
+    });
+
+    expect(receivedEvents).toEqual(mockEvents);
+  }, 15000);
+
+  it('should handle authentication errors', async () => {
+    const error = new Error('invalid x-api-key');
+    error.status = 401;
+    error.error = {
+      type: 'authentication_error',
+      message: 'invalid x-api-key'
+    };
+
+    mockCreate.mockRejectedValue(error);
+
+    await expect(generate('Create a test component', 'modern', '')).rejects.toEqual({
+      type: 'error',
+      code: 'CLAUDE_AUTH_ERROR',
+      message: 'invalid x-api-key',
+      retryable: false
     });
   });
 
-  describe('extractComponentName', () => {
-    test('extracts valid component names', () => {
-      expect(extractComponentName('/* Component: HeroSection */')).toBe('HeroSection');
-      expect(extractComponentName('/* Component: FeatureGrid */')).toBe('FeatureGrid');
-    });
+  it('should handle rate limit errors', async () => {
+    const error = new Error('rate limit exceeded');
+    error.status = 429;
+    error.error = {
+      type: 'rate_limit_error',
+      message: 'rate limit exceeded'
+    };
 
-    test('handles invalid markers', () => {
-      expect(extractComponentName('/* Not a component */')).toBeNull();
-      expect(extractComponentName('/* Component: 123 */')).toBeNull();
-    });
+    mockCreate.mockRejectedValue(error);
 
-    test('extracts names from mixed content', () => {
-      const text = `
-        Some thoughts here
-        /* Component: NavBar */
-        const code = true;
-      `;
-      expect(extractComponentName(text)).toBe('NavBar');
+    await expect(generate('Create a test component', 'modern', '')).rejects.toEqual({
+      type: 'error',
+      code: 'CLAUDE_RATE_LIMIT',
+      message: 'rate limit exceeded',
+      retryable: true
     });
   });
+
+  it('should handle general API errors', async () => {
+    const error = new Error('internal server error');
+    error.status = 500;
+    error.error = {
+      type: 'internal_error',
+      message: 'internal server error'
+    };
+
+    mockCreate.mockRejectedValue(error);
+
+    await expect(generate('Create a test component', 'modern', '')).rejects.toEqual({
+      type: 'error',
+      code: 'CLAUDE_API_ERROR',
+      message: 'internal server error',
+      retryable: true
+    });
+  });
+
+  it('should handle malformed component metadata', async () => {
+    const mockEvents = [
+      { type: 'message_start' },
+      {
+        type: 'content_block_start',
+        metadata: {
+          componentName: 'UnknownComponent',
+          position: 'invalid',
+          componentId: 'comp_unknown'
+        }
+      }
+    ];
+
+    const mockStream = new MockEventStream(mockEvents);
+    mockCreate.mockResolvedValue({ data: mockStream });
+
+    const stream = await generate('Create a test component', 'modern', '');
+    const receivedEvents = [];
+
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout waiting for events'));
+      }, 5000);
+
+      stream.on('data', (data) => {
+        const eventStr = data.toString();
+        if (eventStr.startsWith('data: ')) {
+          try {
+            const eventData = JSON.parse(eventStr.slice(6).trim());
+            receivedEvents.push(eventData);
+            if (receivedEvents.length === mockEvents.length) {
+              clearTimeout(timeout);
+              resolve();
+            }
+          } catch (e) {
+            console.error('Failed to parse event:', eventStr, e);
+          }
+        }
+      });
+
+      stream.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      // Start the stream after setting up handlers
+      mockStream.start();
+    });
+
+    expect(receivedEvents[0]).toEqual({ type: 'message_start' });
+    expect(receivedEvents[1].metadata.componentName).toBe('UnknownComponent');
+  }, 15000);
 }); 

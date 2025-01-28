@@ -7,6 +7,112 @@ module.exports = {
     './app/**/*.{ts,tsx,js,jsx}',
     './src/**/*.{ts,tsx,js,jsx}',
   ],
+  safelist: [
+    // Exact patterns for arbitrary values
+    { 
+      pattern: /bg-\[#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})\]/,
+      variants: ['hover', 'focus', 'active', 'dark']
+    },
+    { 
+      pattern: /text-\[#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})\]/,
+      variants: ['hover', 'focus', 'active', 'dark']
+    },
+    { 
+      pattern: /border-\[#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})\]/,
+      variants: ['hover', 'focus', 'active', 'dark']
+    },
+    
+    // Interactive states for all colors
+    {
+      pattern: /(bg|text|border)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[1-9]00/,
+      variants: ['hover', 'focus', 'active', 'dark', 'dark:hover', 'dark:focus', 'dark:active']
+    },
+    
+    // Background patterns
+    {
+      pattern: /bg-\[url\(.+?\)\]/,
+    },
+    {
+      pattern: /bg-(cover|contain|auto|none)/,
+    },
+    {
+      pattern: /bg-(center|top|bottom|left|right)/,
+    },
+    
+    // Enhanced gradient patterns
+    {
+      pattern: /bg-gradient-to-(r|l|t|b|tr|tl|br|bl)/,
+    },
+    {
+      pattern: /bg-\[linear-gradient\(.+?\)\]/,
+    },
+    {
+      pattern: /bg-\[radial-gradient\(.+?\)\]/,
+    },
+    {
+      pattern: /(from|via|to)-\[.+?\]/,
+      variants: ['hover', 'focus', 'dark']
+    },
+    {
+      pattern: /from-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[1-9]00/,
+    },
+    {
+      pattern: /to-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[1-9]00/,
+    },
+    {
+      pattern: /via-(gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[1-9]00/,
+    },
+    
+    // Special values
+    'to-black',
+    'to-white',
+    'from-black',
+    'from-white',
+    'via-black',
+    'via-white',
+    
+    // Component-specific classes
+    {
+      pattern: /ring-(0|1|2|4|8)$/,
+      variants: ['focus', 'focus-visible', 'dark']
+    },
+    {
+      pattern: /ring-offset-(0|1|2|4|8)$/,
+      variants: ['focus', 'focus-visible', 'dark']
+    },
+    {
+      pattern: /ring-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[1-9]00/,
+      variants: ['focus', 'focus-visible', 'dark']
+    },
+    
+    // Opacity utilities
+    { pattern: /opacity-\d+/ },
+
+    // Additional styling patterns
+    {
+      pattern: /(m|p|gap|space)-(x|y)?-\[.+?\]/,
+    },
+    {
+      pattern: /(w|h|min-w|min-h|max-w|max-h)-\[.+?\]/,
+    },
+    {
+      pattern: /(top|right|bottom|left)-\[.+?\]/,
+    },
+    {
+      pattern: /rounded(-[trbl][rl])?-\[.+?\]/,
+    },
+    
+    // Interactive and state classes
+    {
+      pattern: /pointer-events-(none|auto)/,
+    },
+    {
+      pattern: /select-(none|text|all|auto)/,
+    },
+    {
+      pattern: /disabled:opacity-\d+/,
+    }
+  ],
   prefix: "",
   theme: {
     container: {

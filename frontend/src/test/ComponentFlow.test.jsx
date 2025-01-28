@@ -3,7 +3,7 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { act } from 'react';
 import GeneratePage from '../pages/GeneratePage';
-import { ReadableStream, WritableStream, TransformStream } from 'web-streams-polyfill/ponyfill';
+import { ReadableStream, WritableStream, TransformStream } from 'web-streams-polyfill';
 import userEvent from '@testing-library/user-event';
 import { performance } from 'perf_hooks';
 
@@ -327,4 +327,4 @@ describe('Component Generation Flow', () => {
       expect(thoughtItems[1]).toHaveTextContent('Error: Failed to generate');
     });
   });
-}); 
+});

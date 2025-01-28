@@ -1,141 +1,481 @@
-const aiClient = require('../utils/aiClient');
-const { setupSSE, sendSSEMessage } = require('../utils/sseHelpers');
+const { generate } = require('../utils/aiClient');
 
-function formatStreamMessage(data) {
-  try {
-    // If it's a string, it might be SSE formatted data
-    if (typeof data === 'string') {
-      // Remove the 'data: ' prefix if it exists
-      const jsonStr = data.startsWith('data: ') ? data.slice(6) : data;
-      try {
-        data = JSON.parse(jsonStr);
-      } catch (e) {
-        console.error('Failed to parse stream data:', e);
-        console.error('Raw data:', jsonStr);
-        return `data: ${JSON.stringify({ type: 'error', message: 'Failed to parse stream data' })}\n\n`;
-      }
-    }
+// Constants for validation and safety
+const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer size
+const VALID_POSITIONS = ['header', 'main', 'footer'];
+const MAX_COMPONENT_TIME = 30000; // 30s timeout
 
-    // Format based on message type
-    if (data.type === 'content_block_delta' && data.delta?.text) {
-      return `data: ${JSON.stringify({
-        type: 'content_block_delta',
-        delta: {
-          text: data.delta.text,
-          ...data.delta
-        },
-        metadata: data.metadata || {}
-      })}\n\n`;
-    }
-    
-    // Pass through other message types with full data structure
-    return `data: ${JSON.stringify(data)}\n\n`;
-  } catch (error) {
-    console.error('Error formatting stream message:', error);
-    console.error('Problematic data:', data);
-    return `data: ${JSON.stringify({ type: 'error', message: 'Error formatting message', details: error.message })}\n\n`;
+// Marker detection patterns
+const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([\w]+(?:\s*[\w]+)*)(?:\s+position=([\w]+))?\s*$/m;
+const INCOMPLETE_MARKER = /\/\/\/\s*(START|END)\s*$/m;
+
+// Add test ID validation
+const isTestId = (id) => id.startsWith('test-');
+
+// Validate complete component names
+const isCompleteComponentName = (name, buffer, matchIndex) => {
+  // Handle cases where we might have a partial name
+  if (name.length < 2) return false;
+  
+  // Check if there's more alphanumeric content immediately after
+  const afterMatch = buffer.slice(matchIndex).match(/^[\w\s]+/);
+  if (afterMatch && !afterMatch[0].includes('position=')) {
+    return false; // More content follows that might be part of the name
   }
-}
+  
+  return true;
+};
 
-exports.generateLandingPage = async (req, res) => {
+// Component ID generation with normalization
+const getComponentId = (componentName) => {
+  // Remove any whitespace and normalize the name
+  const normalizedName = componentName.replace(/\s+/g, '');
+  if (normalizedName === 'RootLayout') {
+    return 'root_layout';
+  }
+  return `comp_${normalizedName.toLowerCase()}`;
+};
+
+// Enhanced validation for markers
+const validateMarkers = (markerType, markerName, currentComponentName, buffer, matchIndex) => {
+  if (!markerName || !markerType) {
+    console.warn('❌ Invalid marker format:', { markerType, markerName });
+    return false;
+  }
+  if (markerType === 'END' && !currentComponentName) {
+    console.warn('❌ END marker without active component');
+    return false;
+  }
+  // Check for incomplete markers
+  if (INCOMPLETE_MARKER.test(markerName)) {
+    console.warn('❌ Incomplete marker detected');
+    return false;
+  }
+  // Validate complete component name
+  if (!isCompleteComponentName(markerName, buffer, matchIndex)) {
+    console.warn('❌ Incomplete component name detected:', markerName);
+    return false;
+  }
+  return true;
+};
+
+// Helper to extract component metadata with fallbacks
+const getComponentMetadata = (chunk, existingMetadata = null) => {
+  // If chunk already has metadata, validate and return it
+  if (chunk.metadata?.componentName && chunk.metadata.componentName !== 'UnknownComponent') {
+    return chunk.metadata;
+  }
+
+  // Try to extract from content if no metadata
+  const startMatch = chunk.delta?.text?.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
+  if (startMatch) {
+    const position = startMatch[2] && VALID_POSITIONS.includes(startMatch[2]) ? startMatch[2] : 'main';
+    return {
+      componentName: startMatch[1],
+      position,
+      componentId: startMatch[1] === 'RootLayout' ? 'root_layout' : `comp_${startMatch[1].toLowerCase()}`
+    };
+  }
+
+  // Fallback to existing metadata or generate temporary
+  return existingMetadata || {
+    componentName: 'UnknownComponent',
+    position: 'main',
+    componentId: 'comp_unknown'
+  };
+};
+
+// Validate component code structure
+const validateComponent = (code, componentName) => {
   try {
-    console.log('Generate request received:', {
-      method: req.method,
-      prompt: req.method === 'GET' ? req.query.prompt?.slice(0, 100) : req.body.prompt?.slice(0, 100),
-      hasStyle: req.method === 'GET' ? !!req.query.style : !!req.body.style,
-      hasRequirements: req.method === 'GET' ? !!req.query.requirements : !!req.body.requirements
-    });
-
-    // Handle both GET and POST requests
-    const { prompt, style, requirements } = req.method === 'GET' ? req.query : req.body;
-
-    if (!prompt) {
-      console.log('No prompt provided');
-      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Prompt is required' })}\n\n`);
-      return res.end();
+    // Basic syntax check: must have export function or export const
+    if (!code.match(/export(\s+default)?\s+(function|const)/)) {
+      console.warn(`Invalid component format for ${componentName}: Missing export`);
+      return false;
     }
 
-    // Set up SSE
-    setupSSE(req, res);
-    console.log('SSE connection established');
+    // Check for component name consistency
+    const nameMatch = code.match(/export(?:\s+default)?\s+(?:function|const)\s+(\w+)/);
+    if (!nameMatch || (componentName === 'RootLayout' && !code.includes('RootLayout'))) {
+      console.warn(`Component name mismatch: Expected ${componentName}, found ${nameMatch?.[1]}`);
+      return false;
+    }
 
-    // Start the generation with all parameters
-    console.log('Starting AI generation');
-    const stream = await aiClient.generate({
-      prompt,
-      style,
-      requirements
+    // Check for return statement in non-RootLayout components
+    if (componentName !== 'RootLayout' && !code.includes('return')) {
+      console.warn(`Invalid component format for ${componentName}: Missing return statement`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Component validation failed:', error);
+    return false;
+  }
+};
+
+// Enhanced error handling
+const handleStreamError = (error, res, currentComponentId, currentComponentName, accumulatedCode, stopComponent) => {
+  console.error('❌ Stream error:', error);
+  if (currentComponentId && accumulatedCode.trim()) {
+    // Try to salvage current component
+    console.log('⚠️ Attempting to salvage component before error handling');
+    stopComponent();
+  }
+  if (res.writable) {
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      code: 'STREAM_ERROR',
+      message: error.message,
+      retryable: false
+    })}\n\n`);
+    res.end();
+  }
+};
+
+const generateController = async (req, res) => {
+  try {
+    // Validate project and version IDs
+    const { projectId, versionId } = req.query;
+    if (!projectId || !versionId) {
+      res.write(`data: ${JSON.stringify({
+        type: 'error',
+        code: 'MISSING_IDS',
+        message: 'Missing projectId or versionId',
+        retryable: false
+      })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Allow test IDs to bypass database validation
+    if (!isTestId(projectId) || !isTestId(versionId)) {
+      console.log('⚠️ Non-test IDs would be validated against database');
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+    console.log('📡 SSE headers set');
+
+    const { prompt, style, requirements } = req.body;
+    const stream = await generate(prompt, style, requirements);
+
+    // Handle client disconnect
+    req.on('close', () => {
+      console.log('❌ Client disconnected');
+      stream.destroy();
+      if (!res.writableEnded) {
+        res.end();
+      }
     });
 
-    let messageCount = 0;
-    let hasError = false;
+    // Component state management
+    const componentStates = new Map();
+    
+    const updateComponentState = (id, updates) => {
+      const current = componentStates.get(id) || {};
+      const updated = {
+        ...current,
+        ...updates,
+        lastUpdated: Date.now()
+      };
+      componentStates.set(id, updated);
+      return updated;
+    };
+
+    const createMetadata = (componentId, type) => {
+      const state = componentStates.get(componentId);
+      if (!state) return null;
+
+      return {
+        componentId: state.id,
+        componentName: state.name,
+        position: state.position,
+        isComplete: type === 'stop' ? true : undefined,
+        sections: type === 'stop' ? {
+          header: Array.from(sections.header),
+          main: Array.from(sections.main),
+          footer: Array.from(sections.footer)
+        } : undefined
+      };
+    };
+
+    let buffer = '';
+    let currentComponentId = null;
+    let currentComponentName = null;
+    let accumulatedCode = '';
+    let componentStartTime = null;
+    const sections = { header: new Set(), main: new Set(), footer: new Set() };
+
+    // Helper function to start a component
+    const startComponent = (name, position, componentId) => {
+      console.log(`🎬 Starting component ${name} in position ${position}`);
+      componentStartTime = Date.now();
+      currentComponentName = name;
+      currentComponentId = componentId;
+
+      if (!VALID_POSITIONS.includes(position)) {
+        position = 'main';
+      }
+      sections[position].add(componentId);
+
+      // Initialize component state
+      updateComponentState(componentId, {
+        id: componentId,
+        name: name,
+        position: position,
+        isStreaming: true,
+        isComplete: false,
+        code: '',
+        startTime: Date.now()
+      });
+
+      // Notify frontend of new component
+      res.write(`data: ${JSON.stringify({
+        type: 'content_block_start',
+        metadata: createMetadata(componentId, 'start')
+      })}\n\n`);
+
+      if (typeof res.flush === 'function') {
+        res.flush();
+      }
+    };
+
+    // Helper function to finalize a component
+    const stopComponent = (componentDuration) => {
+      if (!currentComponentId) return;
+
+      console.log(`✅ Completing component ${currentComponentName} with ${accumulatedCode.length} bytes`);
+      
+      if (!accumulatedCode.trim()) {
+        console.log(`⚠️ No code accumulated for ${currentComponentName}, skipping.`);
+      } else {
+        if (validateComponent(accumulatedCode, currentComponentName)) {
+          // Update component state
+          updateComponentState(currentComponentId, {
+            isStreaming: false,
+            isComplete: true,
+            code: accumulatedCode,
+            duration: componentDuration || Date.now() - componentStartTime
+          });
+
+          // Send accumulated code
+          res.write(`data: ${JSON.stringify({
+            type: 'content_block_delta',
+            metadata: createMetadata(currentComponentId, 'delta'),
+            delta: { text: accumulatedCode }
+          })}\n\n`);
+
+          // Mark as complete
+          res.write(`data: ${JSON.stringify({
+            type: 'content_block_stop',
+            metadata: createMetadata(currentComponentId, 'stop')
+          })}\n\n`);
+        } else {
+          console.warn(`❌ Invalid component code for ${currentComponentName}`);
+          // Update state to reflect validation failure
+          updateComponentState(currentComponentId, {
+            isStreaming: false,
+            isComplete: false,
+            error: 'Component validation failed'
+          });
+        }
+      }
+      
+      // Reset state
+      currentComponentId = null;
+      currentComponentName = null;
+      accumulatedCode = '';
+      componentStartTime = null;
+    };
 
     // Handle stream events
-    stream.on('data', chunk => {
+    stream.on('data', (chunk) => {
       try {
-        messageCount++;
-        const rawData = chunk.toString();
-        console.log(`Received message #${messageCount}:`, rawData.slice(0, 100) + '...');
-        
-        // Format the message before sending
-        const formattedData = formatStreamMessage(rawData);
-        console.log(`Formatted message #${messageCount}:`, formattedData.slice(0, 100) + '...');
-        
-        // Check if it's an error message
-        try {
-          const parsed = JSON.parse(formattedData.slice(6)); // Remove 'data: '
-          if (parsed.type === 'error') {
-            hasError = true;
-          }
-        } catch (e) {
-          console.error('Error parsing formatted data:', e);
+        if (!res.writable) {
+          console.log('❌ Response no longer writable');
+          stream.destroy();
+          return;
         }
 
-        const success = res.write(formattedData);
-        console.log(`Message #${messageCount} sent:`, { success });
+        // Check for component timeout
+        if (currentComponentId && componentStartTime && 
+            (Date.now() - componentStartTime > MAX_COMPONENT_TIME)) {
+          console.warn(`⚠️ Component ${currentComponentName} timed out after ${MAX_COMPONENT_TIME}ms`);
+          stopComponent();
+        }
 
-        if (!success) {
-          console.warn('Back pressure detected in stream');
-          stream.pause();
-          res.once('drain', () => stream.resume());
+        // Avoid huge memory usage
+        if (buffer.length > MAX_BUFFER_SIZE) {
+          console.warn('🚨 Buffer overflow - clearing');
+          if (currentComponentId) {
+            // Try to salvage current component before clearing
+            stopComponent();
+          }
+          buffer = '';
+          accumulatedCode = '';
+        }
+
+        // Parse Anthropic's format
+        const event = JSON.parse(chunk.toString());
+
+        if (event.type === 'content_block_delta' && event.delta?.text) {
+          // Accumulate text in buffer
+          buffer += event.delta.text;
+          console.log(`📝 Accumulated ${event.delta.text.length} bytes in buffer`);
+        }
+
+        // Skip processing if we detect an incomplete marker
+        if (INCOMPLETE_MARKER.test(buffer)) {
+          console.log('⏳ Detected incomplete marker, waiting for more data');
+          return;
+        }
+
+        // Keep searching for complete markers
+        let match;
+        while ((match = buffer.match(MARKER_PATTERN))) {
+          const markerFull = match[0];
+          const markerType = match[1];          // START or END
+          const markerName = match[2].trim();   // e.g. RootLayout, Hero, etc. (now with trim)
+          const markerPosition = match[3] || ''; // e.g. header, main, etc.
+
+          // Validate markers with improved checks
+          if (!validateMarkers(markerType, markerName, currentComponentName, buffer, match.index)) {
+            console.log('⏳ Waiting for complete component name');
+            return; // Wait for more data instead of skipping
+          }
+
+          const matchIndex = match.index;
+          const codeBeforeMarker = buffer.slice(0, matchIndex);
+
+          // If we see a new START while still inside a component, stop the old one
+          if (currentComponentId && markerType === 'START') {
+            console.log(`⚠️ New component ${markerName} started while ${currentComponentName} is active - stopping current`);
+            accumulatedCode += codeBeforeMarker;
+            stopComponent();
+          }
+
+          if (currentComponentId) {
+            accumulatedCode += codeBeforeMarker;
+          }
+
+          // Remove consumed portion from buffer
+          buffer = buffer.slice(matchIndex + markerFull.length);
+
+          if (markerType === 'START') {
+            const componentId = getComponentId(markerName);
+            console.log(`🎯 Starting component ${markerName} with ID ${componentId}`);
+            startComponent(markerName, markerPosition, componentId);
+          } else if (markerType === 'END') {
+            if (markerName === currentComponentName) {
+              const componentDuration = Date.now() - componentStartTime;
+              console.log(`✅ Ending component ${markerName} after ${componentDuration}ms`);
+              stopComponent(componentDuration);
+            } else {
+              console.warn(`❌ END marker for ${markerName} but current is ${currentComponentName}`);
+            }
+          }
+        }
+
+        // If in a component, accumulate any leftover buffer
+        if (currentComponentId) {
+          accumulatedCode += buffer;
+          buffer = '';
+        }
+
+        // Flush SSE to client
+        if (typeof res.flush === 'function') {
+          res.flush();
         }
       } catch (error) {
-        console.error('Error processing chunk:', error);
-        console.error('Problematic chunk:', chunk.toString());
-        res.write(`data: ${JSON.stringify({ 
-          type: 'error', 
-          message: 'Error processing generation chunk',
-          details: error.message
-        })}\n\n`);
-        hasError = true;
+        handleStreamError(error, res, currentComponentId, currentComponentName, accumulatedCode, stopComponent);
+        stream.destroy();
       }
     });
 
+    // When the stream ends
     stream.on('end', () => {
-      console.log('AI generation completed. Total messages sent:', messageCount);
-      if (!hasError) {
-        res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-      }
-      res.end();
-    });
+      console.log('✅ Stream complete');
 
-    stream.on('error', (error) => {
-      console.error('Stream error:', error);
-      res.write(`data: ${JSON.stringify({ 
-        type: 'error', 
-        message: error.message || 'Generation failed',
-        details: error.stack
+      // If we still have a component open, close it
+      if (currentComponentId && accumulatedCode.trim()) {
+        accumulatedCode += buffer;
+        buffer = '';
+
+        if (validateComponent(accumulatedCode, currentComponentName)) {
+          const componentDuration = Date.now() - componentStartTime;
+          
+          // Update final component state
+          updateComponentState(currentComponentId, {
+            isStreaming: false,
+            isComplete: true,
+            code: accumulatedCode,
+            duration: componentDuration
+          });
+
+          // Final block delta
+          res.write(`data: ${JSON.stringify({
+            type: 'content_block_delta',
+            metadata: createMetadata(currentComponentId, 'delta'),
+            delta: { text: accumulatedCode }
+          })}\n\n`);
+
+          // Mark as complete
+          res.write(`data: ${JSON.stringify({
+            type: 'content_block_stop',
+            metadata: createMetadata(currentComponentId, 'stop')
+          })}\n\n`);
+        }
+      }
+
+      // Get final state of all components
+      const finalState = Array.from(componentStates.values()).map(state => ({
+        id: state.id,
+        name: state.name,
+        position: state.position,
+        isComplete: state.isComplete,
+        duration: state.duration
+      }));
+
+      // Send final completion signal with complete metadata
+      res.write(`data: ${JSON.stringify({
+        type: 'message_stop',
+        metadata: {
+          sections: {
+            header: Array.from(sections.header),
+            main: Array.from(sections.main),
+            footer: Array.from(sections.footer)
+          },
+          totalComponents: sections.header.size + sections.main.size + sections.footer.size,
+          components: finalState
+        }
       })}\n\n`);
       res.end();
     });
 
+    // Handle stream errors
+    stream.on('error', (err) => {
+      handleStreamError(err, res, currentComponentId, currentComponentName, accumulatedCode, stopComponent);
+    });
+    
   } catch (error) {
-    console.error('Generation error:', error);
-    res.write(`data: ${JSON.stringify({ 
-      type: 'error', 
-      message: error.message || 'Generation failed',
-      details: error.stack
-    })}\n\n`);
-    res.end();
+    console.error('💥 Error:', error);
+    if (res.writable) {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error',
+        code: error.code || 'GENERATION_ERROR',
+        message: error.message,
+        retryable: error.retryable ?? false
+      })}\n\n`);
+      res.end();
+    }
   }
-}; 
+};
+
+module.exports = generateController; 

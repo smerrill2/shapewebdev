@@ -1,15 +1,23 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '../lib/utils';
 import { Loader2, CheckCircle2 } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import PropTypes from 'prop-types';
 
 const TYPING_SPEEDS = {
-  NEWLINE: 100,
-  PUNCTUATION: 80,
-  NORMAL: 20
+  NEWLINE: 50,
+  PUNCTUATION: 30,
+  NORMAL: 15,
+  STREAMING: 8
 };
 
-const MIN_OVERLAP_LENGTH = 3;
+const ANIMATION_STATES = {
+  IDLE: 'idle',
+  STREAMING: 'streaming',
+  COMPLETE: 'complete',
+  ERROR: 'error'
+};
+
+const MIN_OVERLAP_LENGTH = 5;
 
 const findOverlap = (str1, str2) => {
   if (!str1 || !str2) return 0;
@@ -27,28 +35,75 @@ const findOverlap = (str1, str2) => {
   return overlap;
 };
 
+// Error Boundary Component
+class AnimatedPreviewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error: error.message };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('AnimatedPreview Error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-lg overflow-hidden bg-slate-900">
+          <div className="bg-red-900/20 px-4 py-2">
+            <span className="text-red-400 text-sm">Error: {this.state.error}</span>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// Debounce utility
+const debounce = (fn, ms) => {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+};
+
 const AnimatedPreview = ({ 
   code = '', 
-  isComplete = false, 
+  streamedCode = '',
+  isComplete = false,
+  isStreaming = false,
   componentName = '', 
   className = '',
-  transitionState = null
+  transitionState = null,
+  isVisible = true
 }) => {
+  if (!isVisible) return null;
+
   const [displayState, setDisplayState] = useState({
     text: '',
     typing: false,
     progress: 0,
-    error: null
+    error: null,
+    animationState: ANIMATION_STATES.IDLE
   });
 
   const animationState = useRef({
     cancelled: false,
     currentTimeout: null,
     progress: 0,
-    startTime: 0
+    startTime: 0,
+    lastUpdateTime: 0
   });
 
-  const getTypingDelay = useCallback((char, nextChar) => {
+  const getTypingDelay = useCallback((char, nextChar, isStreaming) => {
+    if (isStreaming) return TYPING_SPEEDS.STREAMING;
     if (char === '\n') return TYPING_SPEEDS.NEWLINE;
     if (/[{}]/.test(char)) return TYPING_SPEEDS.PUNCTUATION;
     if (/[;,.]/.test(char) && /\s/.test(nextChar || '')) return TYPING_SPEEDS.PUNCTUATION;
@@ -63,74 +118,107 @@ const AnimatedPreview = ({
     animationState.current.cancelled = true;
   }, []);
 
-  const typeCode = useCallback((text, startIndex = 0) => {
+  const typeCode = useCallback((text, startIndex = 0, isStreaming = false) => {
     // Reset animation state
     animationState.current = {
       cancelled: false,
       currentTimeout: null,
       progress: startIndex / text.length,
-      startTime: Date.now()
+      startTime: Date.now(),
+      lastUpdateTime: Date.now()
     };
 
     const animate = (index) => {
       if (animationState.current.cancelled) return;
       
       if (index >= text.length) {
-        setDisplayState(prev => ({ ...prev, typing: false, progress: 100 }));
+        setDisplayState(prev => ({ 
+          ...prev, 
+          typing: false, 
+          progress: 100,
+          animationState: isComplete ? ANIMATION_STATES.COMPLETE : ANIMATION_STATES.STREAMING
+        }));
         return;
       }
 
       const char = text[index];
       const nextChar = text[index + 1];
-      const delay = getTypingDelay(char, nextChar);
+      const delay = getTypingDelay(char, nextChar, isStreaming);
 
       setDisplayState(prev => ({
         ...prev,
         text: text.slice(0, index + 1),
         typing: true,
-        progress: (index / text.length) * 100
+        progress: (index / text.length) * 100,
+        animationState: isStreaming ? ANIMATION_STATES.STREAMING : ANIMATION_STATES.IDLE
       }));
 
       animationState.current.progress = index / text.length;
+      animationState.current.lastUpdateTime = Date.now();
       animationState.current.currentTimeout = setTimeout(
         () => animate(index + 1),
         delay
       );
     };
 
-    return {
-      start: () => {
-        setDisplayState(prev => ({ 
-          ...prev, 
-          typing: true, 
-          error: null 
-        }));
-        animate(startIndex);
-      },
-      cancel: cancelCurrentAnimation
-    };
-  }, [getTypingDelay, cancelCurrentAnimation]);
+    animate(startIndex);
+  }, [getTypingDelay, isComplete]);
 
-  // Handle code updates and transitions
+  // Cleanup on unmount
   useEffect(() => {
-    if (!code) return;
+    return () => {
+      cancelCurrentAnimation();
+    };
+  }, []);
 
-    try {
-      const overlap = findOverlap(displayState.text, code);
-      const animation = typeCode(code, overlap);
+  const debouncedTypeCode = useCallback(
+    debounce((text, startIndex, isStreaming) => {
+      typeCode(text, startIndex, isStreaming);
+    }, 50),
+    [typeCode]
+  );
+
+  // Handle streaming updates with debouncing
+  useEffect(() => {
+    if (isStreaming && streamedCode && streamedCode !== displayState.text) {
+      const currentText = displayState.text;
+      const newText = streamedCode;
       
-      animation.start();
+      // Immediate update for streaming
+      setDisplayState(prev => ({
+        ...prev,
+        text: newText,
+        typing: false,
+        progress: 100,
+        animationState: ANIMATION_STATES.STREAMING
+      }));
+    }
+  }, [streamedCode, isStreaming, displayState.text]);
 
-      return () => animation.cancel();
-    } catch (error) {
-      console.error('Animation error:', error);
+  // Handle complete code updates
+  useEffect(() => {
+    if (isComplete && code && code !== displayState.text) {
+      setDisplayState(prev => ({
+        ...prev,
+        text: code,
+        typing: false,
+        progress: 100,
+        animationState: ANIMATION_STATES.COMPLETE
+      }));
+    }
+  }, [code, isComplete]);
+
+  // Handle component transitions
+  useEffect(() => {
+    if (transitionState && transitionState.status === 'transitioning') {
+      cancelCurrentAnimation();
       setDisplayState(prev => ({
         ...prev,
         typing: false,
-        error: error.message
+        animationState: ANIMATION_STATES.IDLE
       }));
     }
-  }, [code, typeCode]);
+  }, [transitionState, cancelCurrentAnimation]);
 
   // Handle completion state
   useEffect(() => {
@@ -157,59 +245,76 @@ const AnimatedPreview = ({
     }
   }, [isComplete]);
 
+  // Wrap the main render with error boundary
   return (
-    <Card 
-      data-testid="animated-preview"
-      data-complete={isComplete}
-      className={cn(
-        "relative overflow-hidden transition-all duration-500",
-        isComplete && "border-green-500/50",
-        transitionState?.to === componentName && "animate-slide-in",
-        transitionState?.from === componentName && "animate-slide-out",
-        className
-      )}
-    >
-      <CardHeader className="border-b border-slate-800">
-        <CardTitle 
-          data-testid="preview-title" 
-          className="flex items-center gap-2"
-        >
-          <span className="flex-1">{componentName || 'Component Preview'}</span>
-          {displayState.typing && (
-            <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-          )}
-          {isComplete && (
-            <CheckCircle2 className="w-5 h-5 text-green-500" />
-          )}
-        </CardTitle>
-      </CardHeader>
-      
-      <CardContent className="p-0">
-        <pre 
-          data-testid="preview-code"
-          className={cn(
-            "relative font-mono text-sm overflow-x-auto p-4",
-            displayState.typing && "animate-pulse"
-          )}
-        >
-          {displayState.text && <code>{displayState.text}</code>}
-          {displayState.typing && (
-            <div className="absolute bottom-0 left-0 w-full h-1 bg-slate-800">
-              <div 
-                className="h-full bg-blue-500 transition-all duration-200"
-                style={{ width: `${displayState.progress}%` }}
-              />
+    <AnimatedPreviewErrorBoundary>
+      <div className={`relative rounded-lg overflow-hidden ${className}`}>
+        {/* Header */}
+        <div className="bg-slate-800 px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <span className="text-slate-400 text-sm">{componentName}</span>
+            {displayState.animationState === ANIMATION_STATES.STREAMING && (
+              <span className="text-emerald-400 text-xs">Streaming...</span>
+            )}
+            {displayState.animationState === ANIMATION_STATES.COMPLETE && (
+              <span className="text-emerald-400 text-xs">Complete</span>
+            )}
+            {displayState.error && (
+              <span className="text-red-400 text-xs">Error</span>
+            )}
+          </div>
+          <div className="flex items-center space-x-2">
+            {displayState.typing && (
+              <div className="h-1 w-24 bg-slate-700 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-emerald-500 transition-all duration-200"
+                  style={{ width: `${displayState.progress}%` }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Code Content */}
+        <div className="relative">
+          <pre className={`p-4 text-base font-['SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace] overflow-auto bg-slate-900 ${
+            displayState.typing ? 'typing' : ''
+          }`}>
+            <code className="text-slate-100 font-medium">
+              {displayState.text || ''}
+            </code>
+          </pre>
+
+          {/* Overlay for transitions */}
+          {transitionState?.status === 'transitioning' && (
+            <div className="absolute inset-0 bg-slate-900 bg-opacity-50 flex items-center justify-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-emerald-500" />
             </div>
           )}
-        </pre>
-        {displayState.error && (
-          <div className="p-4 text-red-400 text-sm border-t border-red-500/20">
-            Animation Error: {displayState.error}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+
+          {/* Error Display */}
+          {displayState.error && (
+            <div className="absolute inset-0 bg-red-900 bg-opacity-10 p-4">
+              <div className="text-red-400 text-sm">
+                {displayState.error}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </AnimatedPreviewErrorBoundary>
   );
+};
+
+AnimatedPreview.propTypes = {
+  code: PropTypes.string,
+  streamedCode: PropTypes.string,
+  isComplete: PropTypes.bool,
+  isStreaming: PropTypes.bool,
+  componentName: PropTypes.string,
+  className: PropTypes.string,
+  transitionState: PropTypes.object,
+  isVisible: PropTypes.bool
 };
 
 export default React.memo(AnimatedPreview);
@@ -241,4 +346,4 @@ export default React.memo(AnimatedPreview);
  * - Added component transition effects
  * - Implemented completion state handling
  * - Optimized performance
- */ 
+ */

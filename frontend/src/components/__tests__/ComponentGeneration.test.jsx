@@ -2,7 +2,7 @@ import { act } from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
-import { ReadableStream, WritableStream, TransformStream } from 'web-streams-polyfill/ponyfill';
+import { ReadableStream, WritableStream, TransformStream } from 'web-streams-polyfill';
 import GeneratePage from '../../pages/GeneratePage';
 
 // Add TextEncoder polyfill
@@ -162,4 +162,4 @@ describe('Component Generation System', () => {
       expect(previewContainer).toHaveTextContent('Failed to generate component');
     }, { timeout: 5000 });
   });
-}); 
+});

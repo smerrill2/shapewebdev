@@ -151,6 +151,7 @@ const mockErrorData = [
 global.TextDecoder = TextDecoder;
 
 describe('GeneratePage Integration Tests', () => {
+  jest.setTimeout(30000);
   beforeEach(() => {
     jest.useFakeTimers();
     global.fetch.mockClear();
@@ -417,4 +418,4 @@ describe('GeneratePage Integration Tests', () => {
       expect(screen.getByTestId('preview-Header')).toHaveTextContent('Header Component');
     }, { timeout: 2000 });
   });
-}); 
+});

@@ -1,300 +1,191 @@
-const axios = require('axios');
+require('@anthropic-ai/sdk/shims/node');
+const { Anthropic } = require('@anthropic-ai/sdk');
 const { Readable } = require('stream');
 
-// Add debugging for environment variables
-console.log('Environment check:', {
-  hasApiKey: !!process.env.ANTHROPIC_API_KEY,
-  keyLength: process.env.ANTHROPIC_API_KEY?.length
-});
+const formatPrompt = (prompt, style, requirements) => `
+You are helping generate a React landing page. Follow these exact requirements:
 
-// Helper to properly format SSE data
+1. Component Requirements:
+   - Use ONLY Tailwind CSS for styling (NO inline styles or raw CSS)
+   - REQUIRED: Use shadcn/ui components with EXACT namespace pattern:
+     * Navigation components MUST use these EXACT names:
+       <NavigationMenu>
+         <NavigationMenu.List>
+           <NavigationMenu.Item>
+             <NavigationMenu.Link>Link Text</NavigationMenu.Link>
+           </NavigationMenu.Item>
+         </NavigationMenu.List>
+       </NavigationMenu>
+     * NEVER nest NavigationMenu.List components inside each other
+     * All components support dark mode and are fully accessible
+   - REQUIRED: Access ALL icons through Icons namespace:
+     - Social icons: <Icons.Twitter />, <Icons.Linkedin />, <Icons.Github />
+     - Navigation: <Icons.Menu />, <Icons.ChevronRight />
+     - NEVER use icon components directly (e.g., NO: <Twitter />)
+   - REQUIRED: Use Placeholder components for ALL media content:
+     * ANY image MUST use <Placeholder.Image />
+     * ANY video MUST use <Placeholder.Video />
+     * ANY avatar MUST use <Placeholder.Avatar />
+     * NO raw <img>, <video>, or background-image allowed
+   - All components must be functional React components using hooks if needed
+   - NO raw HTML elements for buttons, inputs, etc - use our UI components
+
+2. Style Requirements:
+   - Use ONLY Tailwind utility classes (e.g., 'bg-slate-900 p-4')
+   - NO inline styles or style objects
+   - For spacing use Tailwind's spacing scale (e.g., p-4, my-6, gap-2)
+   - For colors use Tailwind's color palette
+   - For responsive design use Tailwind breakpoints (sm:, md:, lg:)
+   - NO background-image CSS - use Placeholder.Image instead
+
+3. Structure:
+   - Define each section as a named export function component
+   - RootLayout component MUST be the final component
+   - Use EXACT markers:
+     /// START ComponentName position=header
+     export function ComponentName() { ... }
+     /// END ComponentName
+   - Include position metadata (header, main, footer)
+
+4. Code Style:
+   - Use double quotes (") for strings with apostrophes
+   - Use single quotes (') for all other strings
+   - Ensure all string literals use straight quotes
+   - ${style}
+
+5. Media Placeholders (REQUIRED):
+   - Hero backgrounds: <Placeholder.Image width="100%" height="500px" label="Hero Background" />
+   - Product images: <Placeholder.Image width="400px" height="300px" label="Product Image" />
+   - Videos: <Placeholder.Video width="100%" height="400px" label="Product Demo" />
+   - Avatars: <Placeholder.Avatar size="64px" label="User Avatar" />
+   - EVERY image/video/avatar MUST use a Placeholder component
+   - NO exceptions - do not use divs with background colors for image areas
+
+6. Additional Requirements:
+   ${requirements}
+
+Now, generate a landing page based on this prompt: ${prompt}
+Return ONLY code blocks with markers. No additional text or explanations.`;
+
 const formatSSE = (data) => {
-  try {
-    // Format thought messages
-    if (data.type === 'thought' || data.type === 'message_start') {
-      return `data: ${JSON.stringify({
-        type: data.type,
-        content: data.content || data.thought
-      })}\n\n`;
-    }
-    
-    // Format content block messages
-    if (data.type === 'content_block_delta' || data.type === 'content_block_start') {
-      return `data: ${JSON.stringify({
-        type: data.type,
-        delta: data.delta || {},
-        metadata: data.metadata || {},
-        index: data.index
-      })}\n\n`;
-    }
-
-    // Format completion messages
-    if (data.type === 'content_block_stop' || data.type === 'message_stop') {
-      return `data: ${JSON.stringify({
-        type: data.type,
-        index: data.index
-      })}\n\n`;
-    }
-
-    // Format error messages
-    if (data.type === 'error') {
-      return `data: ${JSON.stringify({
-        type: 'error',
-        error: data.error
-      })}\n\n`;
-    }
-
-    // Default case - pass through the data
-    return `data: ${JSON.stringify(data)}\n\n`;
-  } catch (error) {
-    console.error('Error formatting SSE data:', error);
-    return `data: ${JSON.stringify({ type: 'error', error: 'Error formatting response' })}\n\n`;
-  }
+  return `data: ${JSON.stringify(data)}\n\n`;
 };
 
-// Helper to detect component boundaries
-const detectComponent = (text) => {
-  const componentMarker = text.match(/\/\*\s*Component:\s*([A-Za-z0-9]+)\s*\*\//);
-  const exportMarker = text.match(/export\s+default\s+([A-Za-z0-9]+)/);
-  
-  return {
-    isStart: !!componentMarker,
-    isEnd: !!exportMarker,
-    componentName: componentMarker?.[1] || exportMarker?.[1],
-    hasJSX: /return\s*\(\s*</.test(text) || /<[A-Z][A-Za-z]*/.test(text)
-  };
-};
-
-// Enhanced content processing
-async function processAnthropicStream(response, stream) {
-  let buffer = '';
-  let currentBlock = {
-    type: null,
-    index: null,
-    content: '',
-    metadata: {}
-  };
-
-  console.log('Starting stream processing...');
+async function generate(prompt, style, requirements) {
+  console.log('🚀 Starting generation with:', { prompt, style, requirements });
 
   try {
-    for await (const chunk of response.data) {
-      const text = chunk.toString();
-      console.log('Received chunk:', text);
+    // Check for API key in environment variables
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY environment variable is not set');
+    }
 
-      // Split on newlines but handle partial lines
-      buffer += text;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+    // Create Anthropic client
+    const anthropic = new Anthropic({
+      apiKey
+    });
 
-      for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data: ')) continue;
+    console.log('📡 Creating Claude stream...');
 
-        try {
-          const data = JSON.parse(line.slice(5)); // Remove 'data: ' prefix
-          
-          if (!data.type) {
-            console.warn('Missing type in data:', data);
-            continue;
-          }
+    // Create the stream
+    const response = await anthropic.messages.create({
+      model: 'claude-3-5-haiku-latest',
+      max_tokens: 4000,
+      messages: [{
+        role: 'user',
+        content: formatPrompt(prompt, style, requirements)
+      }],
+      stream: true
+    });
 
-          switch (data.type) {
-            case 'message_start':
-              stream.push(formatSSE({
-                type: 'message_start',
-                content: 'Starting generation...'
-              }));
-              break;
+    // Transform Anthropic's stream into a Node.js stream
+    const stream = new Readable({
+      objectMode: true,
+      read() {} // No-op since we'll push data manually
+    });
 
+    // Process Claude's streaming chunks
+    (async () => {
+      try {
+        for await (const chunk of response) {
+          console.log('🔍 Raw Claude chunk:', chunk);
+
+          switch (chunk.type) {
             case 'content_block_start':
-              currentBlock = {
-                type: 'content_block',
-                index: data.index,
-                content: '',
-                metadata: {}
-              };
-              
-              if (data.content?.text) {
-                const componentInfo = detectComponent(data.content.text);
-                if (componentInfo.isStart) {
-                  currentBlock.metadata = {
-                    ...currentBlock.metadata,
-                    ...componentInfo,
-                    isComponent: true
-                  };
-                }
-              }
-              
-              stream.push(formatSSE({
-                type: 'content_block_start',
-                index: data.index,
-                metadata: currentBlock.metadata
-              }));
+            case 'content_block_stop':
+            case 'message_stop':
+              // Push these through untouched
+              stream.push(JSON.stringify(chunk));
               break;
 
             case 'content_block_delta':
-              if (data.delta?.text) {
-                currentBlock.content += data.delta.text;
-                const componentInfo = detectComponent(currentBlock.content);
-                
-                // Update metadata if we detect component information
-                if (componentInfo.componentName && !currentBlock.metadata.componentName) {
-                  currentBlock.metadata = {
-                    ...currentBlock.metadata,
-                    ...componentInfo,
-                    isComponent: true
-                  };
-                }
-
-                // Mark component as complete if we see the export
-                if (componentInfo.isEnd && 
-                    componentInfo.componentName === currentBlock.metadata.componentName) {
-                  currentBlock.metadata.isComplete = true;
-                }
-
-                stream.push(formatSSE({
-                  type: 'content_block_delta',
-                  index: data.index,
-                  delta: data.delta,
-                  metadata: currentBlock.metadata
-                }));
-              }
-              break;
-
-            case 'content_block_stop':
-              if (currentBlock.content) {
-                stream.push(formatSSE({
-                  type: 'content_block_stop',
-                  index: data.index,
-                  metadata: currentBlock.metadata
-                }));
-              }
-              currentBlock = {
-                type: null,
-                index: null,
-                content: '',
-                metadata: {}
-              };
-              break;
-
-            case 'message_stop':
-              stream.push(formatSSE({
-                type: 'message_stop'
+              // Preserve the full structure including type and delta
+              stream.push(JSON.stringify({
+                type: 'content_block_delta',
+                metadata: chunk.metadata || {},
+                delta: chunk.delta
               }));
               break;
 
+            case 'message_delta':
+              // Only push message_delta if it has content
+              if (chunk.delta?.text) {
+                stream.push(JSON.stringify({
+                  type: 'message_delta',
+                  delta: chunk.delta
+                }));
+              }
+              break;
+
             default:
-              console.warn('Unknown message type:', data.type);
+              // Log unhandled types but don't break the stream
+              console.log('Unhandled chunk type:', chunk.type);
+              break;
           }
-        } catch (err) {
-          console.error('Error processing line:', err);
-          console.error('Problematic line:', line);
-          stream.push(formatSSE({
-            type: 'error',
-            error: `Error processing stream data: ${err.message}`
-          }));
         }
+        // End the readable stream once Claude is done
+        stream.push(null);
+      } catch (error) {
+        stream.emit('error', error);
       }
-    }
+    })();
+
+    return stream;
   } catch (error) {
-    console.error('Stream processing error:', error);
-    stream.push(formatSSE({
+    console.error('❌ Generation error:', error);
+    
+    // Handle Anthropic's error format
+    const errorResponse = {
       type: 'error',
-      error: `Stream processing failed: ${error.message}`
-    }));
-  } finally {
-    if (currentBlock.content) {
-      stream.push(formatSSE({
-        type: 'content_block_stop',
-        index: currentBlock.index,
-        metadata: currentBlock.metadata
-      }));
+      code: 'CLAUDE_API_ERROR',
+      message: error.message || 'Unknown error',
+      retryable: false
+    };
+
+    // Handle specific error types
+    if (error.error?.type === 'authentication_error') {
+      errorResponse.code = 'CLAUDE_AUTH_ERROR';
+      errorResponse.message = error.error.message;
+    } else if (error.error?.type === 'rate_limit_error') {
+      errorResponse.code = 'CLAUDE_RATE_LIMIT';
+      errorResponse.message = error.error.message;
+      errorResponse.retryable = true;
+    } else if (error.error?.type === 'internal_error') {
+      errorResponse.code = 'CLAUDE_API_ERROR';
+      errorResponse.message = error.error.message;
+      errorResponse.retryable = true;
+    } else if (error.message === 'ANTHROPIC_API_KEY environment variable is not set') {
+      errorResponse.code = 'CLAUDE_API_ERROR';
+      errorResponse.message = error.message;
+      errorResponse.retryable = false;
     }
-    stream.push(null);
+
+    throw errorResponse;
   }
 }
 
-// Helper for exponential backoff
-const backoff = (attempt) => Math.min(1000 * Math.pow(2, attempt), 10000);
-
-// Main generate function
 module.exports = {
-  generate: async function({ prompt, style, requirements }) {
-    try {
-      console.log('Starting generation with:', { 
-        prompt: prompt?.slice(0, 100), 
-        hasStyle: !!style, 
-        hasRequirements: !!requirements 
-      });
-      
-      const stream = new Readable({
-        read() {}
-      });
-
-      let fullPrompt = `You are a highly creative web developer specialized in creating stunning, unique React landing pages. Your task is to generate an innovative and visually striking landing page that pushes the boundaries of modern web design.
-
-Important: Use ONLY icons from the 'lucide-react' library. Available icons include: Globe, Shield, ChartLine, User, Heart, etc. Import them directly from 'lucide-react', NOT from any other icon library.
-
-Here is the request: ${prompt}${style ? `\nStyle preferences: ${style}` : ''}${requirements ? `\nSpecific requirements: ${requirements}` : ''}`;
-
-      let attempt = 0;
-      let response;
-
-      while (attempt < 3) {
-        try {
-          response = await axios({
-            method: 'post',
-            url: 'https://api.anthropic.com/v1/messages',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': process.env.ANTHROPIC_API_KEY,
-              'anthropic-version': '2023-06-01',
-              'accept': 'text/event-stream'
-            },
-            data: {
-              model: 'claude-3-haiku-20240307',
-              messages: [{
-                role: 'user',
-                content: [{
-                  type: 'text',
-                  text: fullPrompt
-                }]
-              }],
-              stream: true,
-              max_tokens: 4000,
-              temperature: 0.7
-            },
-            responseType: 'stream'
-          });
-          
-          break; // Success, exit retry loop
-        } catch (error) {
-          attempt++;
-          if (attempt === 3) throw error;
-          
-          // Handle rate limiting
-          if (error.response?.status === 429) {
-            const delay = backoff(attempt);
-            console.log(`Rate limited, waiting ${delay}ms before retry...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-        }
-      }
-
-      await processAnthropicStream(response, stream);
-      return stream;
-
-    } catch (error) {
-      console.error('Generation error:', error);
-      const stream = new Readable({
-        read() {}
-      });
-      stream.push(formatSSE({
-        type: 'error',
-        error: `Generation failed: ${error.message}`
-      }));
-      stream.push(null);
-      return stream;
-    }
-  }
+  generate,
+  formatPrompt
 };

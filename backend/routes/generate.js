@@ -1,9 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { generateLandingPage } = require('../controllers/generateController');
+const generateController = require('../controllers/generateController');
 
-// Main generation endpoint - support both GET (for SSE) and POST
-router.get('/', generateLandingPage);
-router.post('/', generateLandingPage);
+// POST /api/generate
+router.post('/', generateController);
 
 module.exports = router; 
