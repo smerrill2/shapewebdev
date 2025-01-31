@@ -2,7 +2,20 @@ const { generate } = require('../utils/aiClient');
 
 // Constants for validation and safety
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer size
-const VALID_POSITIONS = ['header', 'main', 'footer'];
+const VALID_POSITIONS = [
+  'header',
+  'main',
+  'footer',
+  'nav',
+  'sidebar',
+  'content',
+  'features',
+  'testimonials',
+  'pricing',
+  'cta',
+  'contact',
+  'custom'
+];
 const MAX_COMPONENT_TIME = 30000; // 30s timeout
 
 // Marker detection patterns
@@ -69,7 +82,11 @@ const getComponentMetadata = (chunk, existingMetadata = null) => {
   // Try to extract from content if no metadata
   const startMatch = chunk.delta?.text?.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
   if (startMatch) {
-    const position = startMatch[2] && VALID_POSITIONS.includes(startMatch[2]) ? startMatch[2] : 'main';
+    const position = startMatch[2] && VALID_POSITIONS.includes(startMatch[2]) 
+      ? startMatch[2] 
+      : startMatch[2] === undefined 
+        ? 'main'  // Default to main if no position specified
+        : 'custom'; // Use custom for unknown positions
     return {
       componentName: startMatch[1],
       position,
@@ -85,25 +102,31 @@ const getComponentMetadata = (chunk, existingMetadata = null) => {
   };
 };
 
-// Validate component code structure
+// Validate component code structure with more flexibility
 const validateComponent = (code, componentName) => {
   try {
-    // Basic syntax check: must have export function or export const
-    if (!code.match(/export(\s+default)?\s+(function|const)/)) {
-      console.warn(`Invalid component format for ${componentName}: Missing export`);
+    // Basic syntax check: must be a valid function or const component
+    if (!code.match(/(export\s+)?(default\s+)?(function|const)\s+\w+/)) {
+      console.warn(`Invalid component format for ${componentName}: Missing component definition`);
       return false;
     }
 
-    // Check for component name consistency
-    const nameMatch = code.match(/export(?:\s+default)?\s+(?:function|const)\s+(\w+)/);
-    if (!nameMatch || (componentName === 'RootLayout' && !code.includes('RootLayout'))) {
-      console.warn(`Component name mismatch: Expected ${componentName}, found ${nameMatch?.[1]}`);
+    // Check for component name consistency, but be more flexible
+    const nameMatch = code.match(/(function|const)\s+(\w+)/);
+    if (!nameMatch) {
+      console.warn(`Unable to identify component name in code`);
       return false;
     }
 
-    // Check for return statement in non-RootLayout components
-    if (componentName !== 'RootLayout' && !code.includes('return')) {
-      console.warn(`Invalid component format for ${componentName}: Missing return statement`);
+    // Allow for more flexible component patterns
+    const hasJSXReturn = code.includes('return') && (
+      code.includes('<') || 
+      code.includes('React.createElement') || 
+      code.includes('jsx')
+    );
+
+    if (!hasJSXReturn) {
+      console.warn(`Invalid component format for ${componentName}: No JSX return detected`);
       return false;
     }
 

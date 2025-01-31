@@ -31,6 +31,8 @@ const cleanCode = (rawCode) => {
     .replace(/\s*(?:position=|=)\w+\s*/g, '\n')
     // Remove any standalone words that aren't part of the code
     .replace(/^[A-Za-z]+(?!\s*[({=])\s*$/gm, '')
+    // Replace NavigationMenu.Link with Link for simpler navigation
+    .replace(/NavigationMenu\.Link/g, 'Link')
     // Clean up multiple newlines
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -192,6 +194,19 @@ const ESSENTIAL_SCOPE = {
     Logo: LucideIcons.Box
   },
 
+  // Simple Link component for basic navigation
+  Link: ({ href, children, className }) => (
+    <a 
+      href={href} 
+      className={cn(
+        "text-sm font-medium transition-colors hover:text-primary",
+        className
+      )}
+    >
+      {children}
+    </a>
+  ),
+
   // Placeholder components
   Placeholder: {
     Image: ({ width, height, label, className = '', ...props }) => (
@@ -207,6 +222,55 @@ const ESSENTIAL_SCOPE = {
       </div>
     )
   }
+};
+
+// Helper to create a temporary wrapper for streaming components
+const createStreamingWrapper = (components) => {
+  // Group components by position
+  const groupedComponents = components.reduce((acc, comp) => {
+    const position = comp.position || 'main';
+    if (!acc[position]) acc[position] = [];
+    acc[position].push(comp);
+    return acc;
+  }, {});
+
+  // Create sections in proper order
+  const sections = [
+    { name: 'header', className: 'sticky top-0 z-50' },
+    { name: 'nav', className: 'z-40' },
+    { name: 'main', className: 'flex-1' },
+    { name: 'sidebar', className: 'z-30' },
+    { name: 'footer', className: 'z-20' },
+    { name: 'custom', className: '' }
+  ];
+
+  const sectionCode = sections
+    .map(section => {
+      const comps = groupedComponents[section.name] || [];
+      if (comps.length === 0) return '';
+
+      return `
+        <div className={\`w-full ${section.className}\`}>
+          ${comps.map(comp => `<${comp.name} />`).join('\n          ')}
+        </div>
+      `;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  return `
+function StreamingPreview() {
+  return (
+    <div className="w-full min-h-screen flex flex-col">
+      ${sectionCode}
+    </div>
+  );
+}
+
+${components.map(comp => comp.code).join('\n\n')}
+
+render(<StreamingPreview />);
+`;
 };
 
 // 5. Preview Component
@@ -267,7 +331,7 @@ const SimpleLivePreview = ({ registry, streamingStates }) => {
     [streamingStates]
   );
 
-  // Compose components
+  // Update the main effect to handle streaming
   useEffect(() => {
     if (!registry?.components) return;
     
@@ -280,33 +344,40 @@ const SimpleLivePreview = ({ registry, streamingStates }) => {
       const rootLayout = completeComponents.find(c => c.isLayout);
       const otherComponents = completeComponents.filter(c => !c.isLayout);
 
-      // Clean and combine component code without exports
-      const componentCode = [
-        // Add components without export statements
-        ...otherComponents.map(component => {
-          const cleanedCode = cleanCode(component.code)
-            .replace(/export\s+/, '');
-          return cleanedCode;
-        }),
-        // Add RootLayout last if it exists
-        rootLayout ? cleanCode(rootLayout.code).replace(/export\s+/, '') : ''
-      ]
-        .filter(Boolean)
-        .join('\n\n');  // Ensure double newline between components
+      // Clean all component codes
+      const cleanedComponents = otherComponents.map(component => ({
+        ...component,
+        code: cleanCode(component.code).replace(/export\s+/, '')
+      }));
 
-      // If we have RootLayout, use it. Otherwise, render the last component directly
-      const finalCode = rootLayout 
-        ? `${componentCode}\n\nrender(<RootLayout />);`
-        : `${componentCode}\n\nrender(${
-            otherComponents.length > 0 
-              ? `<${otherComponents[otherComponents.length - 1].name} />`
-              : '<div />'
-          });`;
+      let finalCode;
+
+      if (rootLayout) {
+        // If we have RootLayout, use the final composition
+        const componentCode = [
+          ...cleanedComponents.map(comp => comp.code),
+          cleanCode(rootLayout.code).replace(/export\s+/, '')
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        finalCode = `${componentCode}\n\nrender(<RootLayout />);`;
+      } else {
+        // During streaming, show all completed components in a wrapper
+        finalCode = createStreamingWrapper(cleanedComponents);
+      }
 
       if (DEBUG_MODE) {
         console.log('📦 Final Code:', {
           hasRootLayout: !!rootLayout,
-          componentCount: otherComponents.length,
+          componentCount: cleanedComponents.length,
+          isStreaming: !rootLayout,
+          componentsByPosition: cleanedComponents.reduce((acc, comp) => {
+            const pos = comp.position || 'main';
+            if (!acc[pos]) acc[pos] = [];
+            acc[pos].push(comp.name);
+            return acc;
+          }, {}),
           code: finalCode
         });
       }
