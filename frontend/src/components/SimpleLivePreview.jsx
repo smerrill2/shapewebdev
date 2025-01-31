@@ -31,6 +31,8 @@ const cleanCode = (rawCode) => {
     .replace(/\/\/\/\s*(START|END).*?\n/g, '\n')
     // Remove position markers
     .replace(/\s*(?:position=|=)\w+\s*/g, '\n')
+    // Remove any standalone words that aren't part of the code
+    .replace(/^[A-Za-z]+(?!\s*[({=])\s*$/gm, '')
     // Clean up multiple newlines
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -172,14 +174,15 @@ const Placeholder = {
 const ESSENTIAL_SCOPE = {
   ...React,
   
-  // Real navigation components
-  NavigationMenu,
-  NavigationMenuList,
-  NavigationMenuItem,
-  NavigationMenuLink,
-  NavigationMenuContent,
-  NavigationMenuTrigger,
-  NavigationMenuViewport,
+  // Real navigation components with namespace pattern
+  NavigationMenu: Object.assign(NavigationMenu, {
+    List: NavigationMenuList,
+    Item: NavigationMenuItem,
+    Link: NavigationMenuLink,
+    Content: NavigationMenuContent,
+    Trigger: NavigationMenuTrigger,
+    Viewport: NavigationMenuViewport,
+  }),
   
   // Other shadcn components through universal namespace
   Button: getShadcnComponent('Button'),
@@ -211,27 +214,43 @@ const ESSENTIAL_SCOPE = {
 // 5. Preview Component
 const PreviewComponent = ({ code, scope }) => {
   const cleanedCode = useMemo(() => cleanCode(code), [code]);
-  const hasRenderCall = useMemo(() => /render\(\s*<[^>]+>\s*\)/.test(cleanedCode), [cleanedCode]);
+  const isStreaming = useMemo(() => !cleanedCode.includes('RootLayout'), [cleanedCode]);
 
   if (DEBUG_MODE) {
     console.log('🎭 Preview Component:', {
       cleanedCode,
-      hasRenderCall,
+      isStreaming,
       scopeKeys: Object.keys(scope)
     });
   }
 
   return (
-    <div className="w-full h-full bg-background relative isolate" data-testid="preview-container">
+    <div className="w-full h-full bg-background relative isolate overflow-hidden" data-testid="preview-container">
       <LiveProvider
         code={cleanedCode}
         scope={scope}
-        noInline={hasRenderCall}
+        noInline={true}
       >
         <EnhancedErrorBoundary data-testid="error-boundary">
           <div className="w-full h-full overflow-auto">
-            <LiveError className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-0 z-10" data-testid="preview-error" />
-            <LivePreview className="w-full relative" data-testid="preview-content" />
+            <LiveError className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-0 z-[100]" data-testid="preview-error" />
+            <div 
+              className={cn(
+                "w-full relative isolate flex flex-col min-h-full",
+                isStreaming && "space-y-8 p-4"
+              )}
+              style={{ 
+                isolation: 'isolate', 
+                contain: 'layout paint style',
+                minHeight: '100vh',
+                '--header-layer': '50',
+                '--hero-layer': '0',
+                '--content-layer': '10'
+              }} 
+              data-testid="preview-content"
+            >
+              <LivePreview />
+            </div>
           </div>
         </EnhancedErrorBoundary>
       </LiveProvider>
@@ -263,25 +282,33 @@ const SimpleLivePreview = ({ registry, streamingStates }) => {
       const rootLayout = completeComponents.find(c => c.isLayout);
       const otherComponents = completeComponents.filter(c => !c.isLayout);
 
-      // Combine code with RootLayout first if it exists
+      // Clean and combine component code without exports
       const componentCode = [
-        rootLayout,
-        ...otherComponents
+        // Add components without export statements
+        ...otherComponents.map(component => {
+          const cleanedCode = cleanCode(component.code)
+            .replace(/export\s+/, '');
+          return cleanedCode;
+        }),
+        // Add RootLayout last if it exists
+        rootLayout ? cleanCode(rootLayout.code).replace(/export\s+/, '') : ''
       ]
         .filter(Boolean)
-        .map(component => component.code)
-        .join('\n\n');
+        .join('\n\n');  // Ensure double newline between components
 
-      // Only add render call if RootLayout exists
-      const hasRenderCall = /render\(\s*<[^>]+>\s*\)/.test(componentCode);
+      // If we have RootLayout, use it. Otherwise, render the last component directly
       const finalCode = rootLayout 
-        ? (hasRenderCall ? componentCode : `${componentCode}\n\nrender(<RootLayout />);`)
-        : componentCode;
+        ? `${componentCode}\n\nrender(<RootLayout />);`
+        : `${componentCode}\n\nrender(${
+            otherComponents.length > 0 
+              ? `<${otherComponents[otherComponents.length - 1].name} />`
+              : '<div />'
+          });`;
 
       if (DEBUG_MODE) {
         console.log('📦 Final Code:', {
           hasRootLayout: !!rootLayout,
-          hasRenderCall,
+          componentCount: otherComponents.length,
           code: finalCode
         });
       }
@@ -299,11 +326,18 @@ const SimpleLivePreview = ({ registry, streamingStates }) => {
   }
 
   return (
-    <div className="h-full flex flex-col bg-background rounded-lg overflow-hidden relative isolate">
-      <div className="text-sm p-2 bg-muted border-b sticky top-0 z-10">
+    <div 
+      className="h-full flex flex-col bg-background rounded-lg overflow-hidden relative" 
+      style={{ 
+        isolation: 'isolate', 
+        contain: 'layout paint style',
+        minHeight: '100vh'
+      }}
+    >
+      <div className="text-sm p-2 bg-muted border-b sticky top-0 z-[100]">
         Live Preview
       </div>
-      <div className="flex-1 relative">
+      <div className="flex-1 relative overflow-hidden">
         <div className="absolute inset-0">
           {hasStreamingComponents && !stableCode && (
             <div className="p-4 text-muted-foreground bg-muted rounded-lg mb-4">
