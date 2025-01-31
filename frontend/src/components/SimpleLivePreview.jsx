@@ -2,8 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { LiveProvider, LivePreview, LiveError } from 'react-live';
 import * as LucideIcons from 'lucide-react';
 import * as UIComponents from './ui';
-import { createDynamicNamespace } from './utils/dynamicNamespace';
-import { createEnhancedNamespace } from './utils/createEnhancedNamespace';
+import { createUniversalNamespace } from './utils/createUniversalNamespace';
 import * as NavigationMenuPrimitive from '@radix-ui/react-navigation-menu';
 import {
   NavigationMenu,
@@ -14,7 +13,6 @@ import {
   NavigationMenuLink,
   NavigationMenuViewport,
 } from './ui/navigation-menu';
-import { createUniversalNamespace } from './utils/createUniversalNamespace';
 import { cn } from './utils/cn';
 
 // Debug flag for development logs
