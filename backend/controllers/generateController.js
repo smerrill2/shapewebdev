@@ -3,17 +3,24 @@ const { generate } = require('../utils/aiClient');
 // Constants for validation and safety
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer size
 const VALID_POSITIONS = [
+  // Layout positions
   'header',
   'main',
   'footer',
   'nav',
   'sidebar',
-  'content',
+  // Content sections
+  'hero',
   'features',
   'testimonials',
   'pricing',
   'cta',
   'contact',
+  'content',
+  'stats',
+  'faq',
+  'team',
+  // Special handling
   'custom'
 ];
 const MAX_COMPONENT_TIME = 30000; // 30s timeout
@@ -72,34 +79,95 @@ const validateMarkers = (markerType, markerName, currentComponentName, buffer, m
   return true;
 };
 
-// Helper to extract component metadata with fallbacks
+// Position normalization helper
+const normalizePosition = (position) => {
+  if (!position) {
+    if (DEBUG_MODE) console.log('📍 No position provided, defaulting to main');
+    return 'main';
+  }
+
+  // Special handling for test components
+  if (position.startsWith('test-') || position.toLowerCase().includes('test')) {
+    if (DEBUG_MODE) console.log('📍 Test component detected, using main position');
+    return 'main';
+  }
+  
+  const normalized = position.toLowerCase().trim();
+  const final = VALID_POSITIONS.includes(normalized) ? normalized : 'custom';
+  
+  if (DEBUG_MODE) {
+    console.log('📍 Position normalization:', {
+      original: position,
+      normalized,
+      final,
+      isValid: VALID_POSITIONS.includes(normalized),
+      isTestComponent: position.startsWith('test-')
+    });
+  }
+  
+  return final;
+};
+
+// Update getComponentMetadata to use normalized positions
 const getComponentMetadata = (chunk, existingMetadata = null) => {
+  if (DEBUG_MODE) {
+    console.log('🔍 Processing component metadata:', {
+      hasExistingMetadata: !!existingMetadata,
+      chunkMetadata: chunk.metadata,
+      text: chunk.delta?.text?.slice(0, 100) // First 100 chars for context
+    });
+  }
+
   // If chunk already has metadata, validate and return it
   if (chunk.metadata?.componentName && chunk.metadata.componentName !== 'UnknownComponent') {
-    return chunk.metadata;
+    const position = normalizePosition(chunk.metadata.position);
+    if (DEBUG_MODE) {
+      console.log('✅ Using existing metadata with normalized position:', {
+        componentName: chunk.metadata.componentName,
+        originalPosition: chunk.metadata.position,
+        normalizedPosition: position
+      });
+    }
+    return {
+      ...chunk.metadata,
+      position
+    };
   }
 
   // Try to extract from content if no metadata
   const startMatch = chunk.delta?.text?.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
   if (startMatch) {
-    const position = startMatch[2] && VALID_POSITIONS.includes(startMatch[2]) 
-      ? startMatch[2] 
-      : startMatch[2] === undefined 
-        ? 'main'  // Default to main if no position specified
-        : 'custom'; // Use custom for unknown positions
-    return {
+    const position = normalizePosition(startMatch[2]);
+    const metadata = {
       componentName: startMatch[1],
       position,
       componentId: startMatch[1] === 'RootLayout' ? 'root_layout' : `comp_${startMatch[1].toLowerCase()}`
     };
+    
+    if (DEBUG_MODE) {
+      console.log('✅ Extracted metadata from content:', {
+        match: startMatch[0],
+        componentName: metadata.componentName,
+        originalPosition: startMatch[2],
+        normalizedPosition: position
+      });
+    }
+    
+    return metadata;
   }
 
   // Fallback to existing metadata or generate temporary
-  return existingMetadata || {
+  const fallbackMetadata = {
     componentName: 'UnknownComponent',
-    position: 'main',
+    position: normalizePosition(existingMetadata?.position),
     componentId: 'comp_unknown'
   };
+
+  if (DEBUG_MODE) {
+    console.log('⚠️ Using fallback metadata:', fallbackMetadata);
+  }
+
+  return fallbackMetadata;
 };
 
 // Validate component code structure with more flexibility

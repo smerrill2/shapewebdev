@@ -3,7 +3,6 @@ import { LiveProvider, LivePreview, LiveError } from 'react-live';
 import * as LucideIcons from 'lucide-react';
 import * as UIComponents from './ui';
 import { createUniversalNamespace } from './utils/createUniversalNamespace';
-import * as NavigationMenuPrimitive from '@radix-ui/react-navigation-menu';
 import {
   NavigationMenu,
   NavigationMenuList,
@@ -14,6 +13,9 @@ import {
   NavigationMenuViewport,
 } from './ui/navigation-menu';
 import { cn } from './utils/cn';
+import { Button } from './ui/button';
+import { Card } from './ui/card';
+import { Link } from 'react-router-dom';
 
 // Debug flag for development logs
 const DEBUG_MODE = process.env.NODE_ENV === 'development';
@@ -151,24 +153,6 @@ class EnhancedErrorBoundary extends React.Component {
 const getShadcnComponent = createUniversalNamespace();
 
 // Special case components that need custom handling
-const Placeholder = {
-  Image: ({ width = 100, height = 100, text = 'Placeholder' }) => (
-    <div 
-      style={{ 
-        width, 
-        height, 
-        backgroundColor: '#e2e8f0',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: '#64748b',
-        borderRadius: '0.375rem'
-      }}
-    >
-      {text}
-    </div>
-  )
-};
 
 // Export the essential scope with all components available at top level
 const ESSENTIAL_SCOPE = {
@@ -184,15 +168,22 @@ const ESSENTIAL_SCOPE = {
     Viewport: NavigationMenuViewport,
   }),
   
-  // Other shadcn components through universal namespace
-  Button: getShadcnComponent('Button'),
-  Card: getShadcnComponent('Card'),
+  // All shadcn components through universal namespace
+  ...Object.fromEntries(
+    ['Button', 'Card', 'CardHeader', 'CardTitle', 'CardDescription', 'CardContent', 'CardFooter']
+    .map(name => [name, getShadcnComponent(name)])
+  ),
   
-  // Special cases that aren't shadcn components
-  Icons: {
-    ...LucideIcons,
-    Logo: LucideIcons.Box
-  },
+  // Make ALL Lucide icons available through Icons namespace
+  Icons: new Proxy(LucideIcons, {
+    get: (target, prop) => {
+      // Return the icon if it exists, or a fallback component if it doesn't
+      return target[prop] || (() => {
+        console.warn(`Icon ${prop} not found`);
+        return null;
+      });
+    }
+  }),
 
   // Simple Link component for basic navigation
   Link: ({ href, children, className }) => (
@@ -220,28 +211,102 @@ const ESSENTIAL_SCOPE = {
       >
         {label}
       </div>
+    ),
+    Video: ({ width, height, label, className = '', ...props }) => (
+      <div
+        className={cn(
+          'bg-slate-100 dark:bg-slate-800 flex items-center justify-center',
+          className
+        )}
+        style={{ width, height }}
+        {...props}
+      >
+        {label}
+      </div>
+    ),
+    Avatar: ({ size = '64px', label, className = '', ...props }) => (
+      <div
+        className={cn(
+          'bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center',
+          className
+        )}
+        style={{ width: size, height: size }}
+        {...props}
+      >
+        {label}
+      </div>
     )
   }
 };
 
 // Helper to create a temporary wrapper for streaming components
 const createStreamingWrapper = (components) => {
-  // Group components by position
+  if (DEBUG_MODE) {
+    console.log('🎭 Creating Streaming Wrapper:', {
+      componentCount: components.length,
+      components: components.map(c => ({
+        name: c.name,
+        position: c.position,
+        hasCode: !!c.code
+      }))
+    });
+  }
+
+  // Group components by position using exactly what comes from the markers
   const groupedComponents = components.reduce((acc, comp) => {
+    // Use the position directly from the component metadata
     const position = comp.position || 'main';
     if (!acc[position]) acc[position] = [];
     acc[position].push(comp);
+
+    if (DEBUG_MODE) {
+      console.log(`📍 Grouping Component:`, {
+        name: comp.name,
+        position,
+        currentSectionCount: acc[position].length
+      });
+    }
     return acc;
   }, {});
 
-  // Create sections in proper order
+  if (DEBUG_MODE) {
+    console.log('🗂 Grouped Components:', Object.entries(groupedComponents).reduce((acc, [pos, comps]) => {
+      acc[pos] = comps.map(c => c.name);
+      return acc;
+    }, {}));
+  }
+
+  // Define section order and styling
   const sections = [
-    { name: 'header', className: 'sticky top-0 z-50' },
-    { name: 'nav', className: 'z-40' },
-    { name: 'main', className: 'flex-1' },
-    { name: 'sidebar', className: 'z-30' },
-    { name: 'footer', className: 'z-20' },
-    { name: 'custom', className: '' }
+    // Layout sections (highest z-index)
+    { name: 'header', className: 'sticky top-0 z-50 bg-background/80 backdrop-blur-sm' },
+    { name: 'nav', className: 'relative z-40' },
+    
+    // Hero section (special handling)
+    { name: 'hero', className: 'relative z-0' },
+    
+    // Main content sections
+    { name: 'main', className: 'relative z-10 flex-1' },
+    { name: 'features', className: 'relative z-10' },
+    { name: 'content', className: 'relative z-10' },
+    { name: 'stats', className: 'relative z-10' },
+    { name: 'testimonials', className: 'relative z-10' },
+    { name: 'team', className: 'relative z-10' },
+    { name: 'faq', className: 'relative z-10' },
+    { name: 'pricing', className: 'relative z-10' },
+    
+    // Call-to-action sections
+    { name: 'cta', className: 'relative z-20' },
+    { name: 'contact', className: 'relative z-20' },
+    
+    // Sidebar (floating)
+    { name: 'sidebar', className: 'relative z-30' },
+    
+    // Footer
+    { name: 'footer', className: 'relative z-30' },
+    
+    // Custom sections (fallback)
+    { name: 'custom', className: 'relative z-10' }
   ];
 
   const sectionCode = sections
@@ -249,19 +314,38 @@ const createStreamingWrapper = (components) => {
       const comps = groupedComponents[section.name] || [];
       if (comps.length === 0) return '';
 
+      if (DEBUG_MODE) {
+        console.log(`🔨 Building Section ${section.name}:`, {
+          componentCount: comps.length,
+          components: comps.map(c => c.name)
+        });
+      }
+
       return `
-        <div className={\`w-full ${section.className}\`}>
-          ${comps.map(comp => `<${comp.name} />`).join('\n          ')}
+        <div 
+          className={\`w-full ${section.className}\`} 
+          data-testid="preview-section-${section.name}"
+        >
+          ${comps.map(comp => {
+            if (DEBUG_MODE) {
+              console.log(`📝 Rendering Component in ${section.name}:`, {
+                name: comp.name,
+                hasCode: !!comp.code,
+                codePreview: comp.code?.slice(0, 100) + '...'
+              });
+            }
+            return `<${comp.name} data-testid="preview-${comp.name}" />`;
+          }).join('\n          ')}
         </div>
       `;
     })
     .filter(Boolean)
     .join('\n');
 
-  return `
+  const finalCode = `
 function StreamingPreview() {
   return (
-    <div className="w-full min-h-screen flex flex-col">
+    <div className="w-full min-h-screen flex flex-col bg-background" data-testid="streaming-preview">
       ${sectionCode}
     </div>
   );
@@ -271,6 +355,16 @@ ${components.map(comp => comp.code).join('\n\n')}
 
 render(<StreamingPreview />);
 `;
+
+  if (DEBUG_MODE) {
+    console.log('✅ Final Streaming Code Generated:', {
+      totalComponents: components.length,
+      sections: Object.keys(groupedComponents),
+      codeLength: finalCode.length
+    });
+  }
+
+  return finalCode;
 };
 
 // 5. Preview Component

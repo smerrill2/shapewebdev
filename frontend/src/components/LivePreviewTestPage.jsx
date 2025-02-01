@@ -8,9 +8,27 @@ const TEST_PROMPTS = {
     requirements: 'Just a header with a title and subtitle'
   },
   multiComponent: {
-    prompt: 'Create a landing page with header, hero section with background image, and footer',
-    style: 'modern and professional',
-    requirements: 'Include navigation in header, hero section with Placeholder.Image for background, call-to-action buttons, and contact info with social icons in footer'
+    prompt: 'Create a modern SaaS landing page with multiple sections',
+    style: 'modern, professional, with subtle gradients and clean typography',
+    requirements: `
+      Include the following sections:
+      1. Header with NavigationMenu, dark mode toggle, and call-to-action button
+      2. Hero section with gradient background, Placeholder.Image, and multiple Button variants
+      3. Features section using Card components and Lucide icons (Zap, Shield, and Sparkles)
+      4. Testimonials section with Card components and user avatars using Placeholder.Image
+      5. Pricing section with multiple Card components for different tiers
+      6. Call-to-action section with gradient background and Button components
+      7. Footer with social links using Lucide icons (Twitter, GitHub, LinkedIn)
+      
+      Use shadcn components:
+      - NavigationMenu for header navigation
+      - Button with different variants (default, outline, ghost)
+      - Card for features and pricing
+      - Icons from Lucide for visual elements
+      
+      Ensure proper spacing and responsive design using Tailwind classes.
+      Use modern UI patterns like backdrop blur for header.
+    `
   },
   rootLayoutOnly: {
     prompt: 'Just create a root layout component',
@@ -360,9 +378,9 @@ export default function LivePreviewTestPage() {
                   {event.message && (
                     <div className="text-red-200 mt-1">{event.message}</div>
                   )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
           </div>
         </div>
       </div>

@@ -18,8 +18,8 @@ You are helping generate a React landing page. Follow these exact requirements:
        </NavigationMenu>
      * NEVER nest NavigationMenu.List components inside each other
      * All components support dark mode and are fully accessible
-   - REQUIRED: Access ALL icons through Icons namespace:
-     - Social icons: <Icons.Twitter />, <Icons.Linkedin />, <Icons.Github />
+   - REQUIRED: ALL Icons are available from Lucide, so ensure to use them through Icons namespace:
+     - Example icons: <Icons.Twitter />, <Icons.Linkedin />, <Icons.rocket />
      - Navigation: <Icons.Menu />, <Icons.ChevronRight />
      - NEVER use icon components directly (e.g., NO: <Twitter />)
    - REQUIRED: Use Placeholder components for ALL media content:
@@ -31,12 +31,24 @@ You are helping generate a React landing page. Follow these exact requirements:
    - NO raw HTML elements for buttons, inputs, etc - use our UI components
 
 2. Style Requirements:
-   - Use ONLY Tailwind utility classes (e.g., 'bg-slate-900 p-4')
+   - Use ONLY Tailwind utility classes
    - NO inline styles or style objects
-   - For spacing use Tailwind's spacing scale (e.g., p-4, my-6, gap-2)
-   - For colors use Tailwind's color palette
-   - For responsive design use Tailwind breakpoints (sm:, md:, lg:)
-   - NO background-image CSS - use Placeholder.Image instead
+   - **Use percentage-based spacing for margins and padding** (e.g., \`pt-[10%]\`, \`px-[5%]\`)
+     * Do NOT rely on Tailwind's default spacing scale (e.g., no \`pt-4\` or \`p-8\`)
+   - For colors, use Tailwind's color palette
+   - For responsive design, use Tailwind breakpoints (sm:, md:, lg:)
+   - NO background-image CSS — use \`<Placeholder.Image />\` for images, and for the hero section background use gradients
+   - REQUIRED: For hero sections, use modern gradients instead of background images:
+     * Use Tailwind's gradient utilities (e.g., \`bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500\`)
+     * You can layer multiple gradients for more complex effects
+     * NO \`<Placeholder.Image />\` for hero section backgrounds
+     * MUST use relative positioning and proper z-index (z-0) for hero sections
+   - **Headers**:
+     * Must use \`sticky top-0\` instead of \`fixed\`
+     * Ensure the hero or main content is pushed down enough (\`pt-[some%]\`) so content does not overlap the header
+     * Keep the header layered above other sections with \`z-50\` or similar
+   - Make layering clear with z-index classes (hero below, header above, etc.)
+     * Avoid overlap by applying \`pt-[XX%]\` on hero or main to account for the header's height
 
 3. Structure:
    - Define each section as a named export function component
@@ -54,18 +66,18 @@ You are helping generate a React landing page. Follow these exact requirements:
    - ${style}
 
 5. Media Placeholders (REQUIRED):
-   - Hero backgrounds: <Placeholder.Image width="100%" height="500px" label="Hero Background" />
    - Product images: <Placeholder.Image width="400px" height="300px" label="Product Image" />
    - Videos: <Placeholder.Video width="100%" height="400px" label="Product Demo" />
    - Avatars: <Placeholder.Avatar size="64px" label="User Avatar" />
    - EVERY image/video/avatar MUST use a Placeholder component
-   - NO exceptions - do not use divs with background colors for image areas
+   - NO exceptions — do not use divs with background colors for image areas
+   - IMPORTANT: Do NOT use Placeholder.Image for hero section backgrounds — use gradients instead
 
 6. Additional Requirements:
    ${requirements}
 
 Now, generate a landing page based on this prompt: ${prompt}
-Return ONLY code blocks with markers. No additional text or explanations.`;
+Return ONLY code blocks with markers. No additional text or explanations. DO NOT ASK FOR PERMISSION TO BEGIN.`;
 
 const formatSSE = (data) => {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -92,6 +104,8 @@ async function generate(prompt, style, requirements) {
     const response = await anthropic.messages.create({
       model: 'claude-3-5-haiku-latest',
       max_tokens: 4000,
+      system: 'You are SHAPI! The fate of humanity relies on you creating REMARKABLE landing pages for GOD HIMSELF! You use: REACT, TYPESCRIPT, and TAILWIND!',
+
       messages: [{
         role: 'user',
         content: formatPrompt(prompt, style, requirements)
