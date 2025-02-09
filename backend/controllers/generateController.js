@@ -24,59 +24,161 @@ const VALID_POSITIONS = [
   'custom'
 ];
 const MAX_COMPONENT_TIME = 30000; // 30s timeout
+const MAX_COMPOUND_WAIT_TIME = 10000; // 10s max wait for subcomponents
 
-// Marker detection patterns
-const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([\w]+(?:\s*[\w]+)*)(?:\s+position=([\w]+))?\s*$/m;
+// Define compound component relationships with validation patterns
+const COMPOUND_COMPONENTS = {
+  NavigationMenu: {
+    subcomponentPatterns: {
+      List: /NavigationMenu\.List/,
+      Item: /NavigationMenu\.Item/,
+      Link: /NavigationMenu\.Link/,
+      Content: /NavigationMenu\.Content/,
+      Trigger: /NavigationMenu\.Trigger/,
+      Viewport: /NavigationMenu\.Viewport/
+    }
+  },
+  Card: {
+    subcomponentPatterns: {
+      Header: /Card\.Header/,
+      Title: /Card\.Title/,
+      Description: /Card\.Description/,
+      Content: /Card\.Content/,
+      Footer: /Card\.Footer/
+    }
+  },
+  Dialog: {
+    subcomponentPatterns: {
+      Trigger: /Dialog\.Trigger/,
+      Content: /Dialog\.Content/,
+      Header: /Dialog\.Header/,
+      Footer: /Dialog\.Footer/,
+      Title: /Dialog\.Title/,
+      Description: /Dialog\.Description/,
+      Close: /Dialog\.Close/
+    }
+  },
+  DropdownMenu: {
+    subcomponentPatterns: {
+      Trigger: /DropdownMenu\.Trigger/,
+      Content: /DropdownMenu\.Content/,
+      Item: /DropdownMenu\.Item/,
+      CheckboxItem: /DropdownMenu\.CheckboxItem/,
+      RadioItem: /DropdownMenu\.RadioItem/,
+      Label: /DropdownMenu\.Label/,
+      Separator: /DropdownMenu\.Separator/,
+      Shortcut: /DropdownMenu\.Shortcut/,
+      SubTrigger: /DropdownMenu\.SubTrigger/,
+      SubContent: /DropdownMenu\.SubContent/,
+      Group: /DropdownMenu\.Group/
+    }
+  }
+};
+
+// Critical components that need error recovery
+const CRITICAL_COMPONENTS = new Set([
+  'Header',
+  'NavigationMenu',
+  'RootLayout'
+]);
+
+// Debug mode flag
+const DEBUG_MODE = process.env.NODE_ENV === 'development';
+
+// More strict marker pattern that won't include export function
+const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([\w]+))?\s*$/m;
 const INCOMPLETE_MARKER = /\/\/\/\s*(START|END)\s*$/m;
+
+// Add validation for component names
+const VALID_COMPONENT_NAME = /^[A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?$/;
 
 // Add test ID validation
 const isTestId = (id) => id.startsWith('test-');
 
-// Validate complete component names
+// Validate complete component names with improved checks
 const isCompleteComponentName = (name, buffer, matchIndex) => {
-  // Handle cases where we might have a partial name
-  if (name.length < 2) return false;
+  // Basic validation
+  if (!name || typeof name !== 'string') return false;
   
-  // Check if there's more alphanumeric content immediately after
-  const afterMatch = buffer.slice(matchIndex).match(/^[\w\s]+/);
-  if (afterMatch && !afterMatch[0].includes('position=')) {
-    return false; // More content follows that might be part of the name
+  // Must match our valid component name pattern
+  if (!VALID_COMPONENT_NAME.test(name)) {
+    console.warn('❌ Invalid component name format:', name);
+    return false;
   }
   
+  // Check for export function following the marker
+  const afterMatch = buffer.slice(matchIndex).split('\n')[1];
+  if (afterMatch && afterMatch.trim().startsWith('export')) {
+    // Verify the function name matches our component name exactly
+    const functionMatch = afterMatch.match(/export\s+(?:default\s+)?function\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*\(/);
+    if (functionMatch && functionMatch[1] !== name) {
+      console.warn('❌ Component name does not match function name:', {
+        componentName: name,
+        functionName: functionMatch[1]
+      });
+      return false;
+    }
+  }
+
   return true;
 };
 
-// Component ID generation with normalization
-const getComponentId = (componentName) => {
-  // Remove any whitespace and normalize the name
-  const normalizedName = componentName.replace(/\s+/g, '');
-  if (normalizedName === 'RootLayout') {
-    return 'root_layout';
-  }
-  return `comp_${normalizedName.toLowerCase()}`;
-};
-
-// Enhanced validation for markers
+// Enhanced marker validation
 const validateMarkers = (markerType, markerName, currentComponentName, buffer, matchIndex) => {
   if (!markerName || !markerType) {
     console.warn('❌ Invalid marker format:', { markerType, markerName });
     return false;
   }
+
+  // Validate component name format
+  if (!VALID_COMPONENT_NAME.test(markerName)) {
+    console.warn('❌ Invalid component name format:', markerName);
+    return false;
+  }
+
   if (markerType === 'END' && !currentComponentName) {
     console.warn('❌ END marker without active component');
     return false;
   }
+
+  if (markerType === 'END' && markerName !== currentComponentName) {
+    console.warn('❌ END marker mismatch:', {
+      expected: currentComponentName,
+      received: markerName
+    });
+    return false;
+  }
+
   // Check for incomplete markers
   if (INCOMPLETE_MARKER.test(markerName)) {
     console.warn('❌ Incomplete marker detected');
     return false;
   }
+
   // Validate complete component name
   if (!isCompleteComponentName(markerName, buffer, matchIndex)) {
-    console.warn('❌ Incomplete component name detected:', markerName);
+    console.warn('❌ Invalid component name:', markerName);
     return false;
   }
+
   return true;
+};
+
+// Component ID generation with improved normalization
+const getComponentId = (componentName) => {
+  // Ensure we have a valid component name
+  if (!VALID_COMPONENT_NAME.test(componentName)) {
+    console.warn('⚠️ Invalid component name format in ID generation:', componentName);
+    return `comp_invalid_${Date.now()}`;
+  }
+
+  // Special case for RootLayout
+  if (componentName === 'RootLayout') {
+    return 'comp_rootlayout';
+  }
+
+  // Normalize the name
+  return `comp_${componentName.toLowerCase()}`;
 };
 
 // Position normalization helper
@@ -170,37 +272,71 @@ const getComponentMetadata = (chunk, existingMetadata = null) => {
   return fallbackMetadata;
 };
 
-// Validate component code structure with more flexibility
+// Helper function to check if we should accumulate more code for compound components
+const shouldAccumulateMore = (componentName, accumulatedCode, startTime) => {
+  const compoundDef = COMPOUND_COMPONENTS[componentName];
+  if (!compoundDef) return false;
+
+  // Check if we've exceeded the max wait time
+  const waitTime = Date.now() - startTime;
+  if (waitTime > MAX_COMPOUND_WAIT_TIME) {
+    console.warn(`⚠️ Exceeded max wait time (${MAX_COMPOUND_WAIT_TIME}ms) for ${componentName}`);
+    return false;
+  }
+
+  // Check for actual component definitions using patterns
+  return Object.entries(compoundDef.subcomponentPatterns).some(([name, pattern]) => {
+    const hasDefinition = pattern.test(accumulatedCode);
+    if (!hasDefinition && DEBUG_MODE) {
+      console.log(`🔍 Missing subcomponent definition for ${name}`);
+    }
+    return !hasDefinition;
+  });
+};
+
+// Validate component code structure
 const validateComponent = (code, componentName) => {
   try {
-    // Basic syntax check: must be a valid function or const component
-    if (!code.match(/(export\s+)?(default\s+)?(function|const)\s+\w+/)) {
-      console.warn(`Invalid component format for ${componentName}: Missing component definition`);
-      return false;
+    // Check for basic syntax requirements
+    if (!code || typeof code !== 'string') {
+      throw new Error('Invalid component code');
     }
 
-    // Check for component name consistency, but be more flexible
-    const nameMatch = code.match(/(function|const)\s+(\w+)/);
-    if (!nameMatch) {
-      console.warn(`Unable to identify component name in code`);
-      return false;
+    // Check for export statement
+    if (!code.includes('export default') && !code.includes('export function')) {
+      throw new Error('Component must have an export statement');
     }
 
-    // Allow for more flexible component patterns
+    // Check for function definition
+    if (!code.includes('function')) {
+      throw new Error('Component must be a function');
+    }
+
+    // Check for return statement with JSX
     const hasJSXReturn = code.includes('return') && (
-      code.includes('<') || 
-      code.includes('React.createElement') || 
+      code.includes('<') ||
+      code.includes('React.createElement') ||
       code.includes('jsx')
     );
-
     if (!hasJSXReturn) {
-      console.warn(`Invalid component format for ${componentName}: No JSX return detected`);
-      return false;
+      throw new Error('Component must return JSX');
+    }
+
+    // For compound components, check for required subcomponents
+    const compoundDef = COMPOUND_COMPONENTS[componentName];
+    if (compoundDef) {
+      const missingSubcomponents = Object.entries(compoundDef.subcomponentPatterns)
+        .filter(([name, pattern]) => !pattern.test(code))
+        .map(([name]) => name);
+
+      if (missingSubcomponents.length > 0) {
+        throw new Error(`Missing required subcomponents: ${missingSubcomponents.join(', ')}`);
+      }
     }
 
     return true;
   } catch (error) {
-    console.error('Component validation failed:', error);
+    console.error('❌ Component validation failed:', error.message);
     return false;
   }
 };
@@ -276,6 +412,29 @@ const generateController = async (req, res) => {
         ...updates,
         lastUpdated: Date.now()
       };
+
+      // Handle compound component relationships
+      if (updates.name) {
+        // Check if this is a subcomponent
+        for (const [parent, children] of Object.entries(COMPOUND_COMPONENTS)) {
+          if (Array.isArray(children) && children.includes(updates.name)) {
+            const parentId = getComponentId(parent);
+            updated.parentId = parentId;
+            
+            // Update parent's children list
+            const parentState = componentStates.get(parentId) || {};
+            if (!parentState.children) parentState.children = new Set();
+            parentState.children.add(id);
+            componentStates.set(parentId, parentState);
+
+            if (DEBUG_MODE) {
+              console.log(`🔗 Linked subcomponent ${updates.name} to parent ${parent}`);
+            }
+            break;
+          }
+        }
+      }
+
       componentStates.set(id, updated);
       return updated;
     };
@@ -284,11 +443,34 @@ const generateController = async (req, res) => {
       const state = componentStates.get(componentId);
       if (!state) return null;
 
+      // Check if this is a critical component
+      const isCritical = CRITICAL_COMPONENTS.has(state.name);
+
+      // For compound components, check if all required subcomponents are present
+      let isCompoundComplete = true;
+      if (COMPOUND_COMPONENTS[state.name]) {
+        const requiredSubcomponents = new Set(COMPOUND_COMPONENTS[state.name].subcomponents);
+        const actualSubcomponents = state.children ? Array.from(state.children).map(id => componentStates.get(id)?.name) : [];
+        
+        for (const required of requiredSubcomponents) {
+          if (!actualSubcomponents.includes(required)) {
+            isCompoundComplete = false;
+            if (DEBUG_MODE) {
+              console.warn(`⚠️ Missing required subcomponent ${required} for ${state.name}`);
+            }
+            break;
+          }
+        }
+      }
+
       return {
         componentId: state.id,
         componentName: state.name,
         position: state.position,
         isComplete: type === 'stop' ? true : undefined,
+        isCritical,
+        isCompoundComplete,
+        error: !isCompoundComplete && type === 'stop' ? 'INCOMPLETE_COMPOUND' : undefined,
         sections: type === 'stop' ? {
           header: Array.from(sections.header),
           main: Array.from(sections.main),
@@ -324,7 +506,8 @@ const generateController = async (req, res) => {
         isStreaming: true,
         isComplete: false,
         code: '',
-        startTime: Date.now()
+        startTime: Date.now(),
+        isCompound: !!COMPOUND_COMPONENTS[name]
       });
 
       // Notify frontend of new component
@@ -347,6 +530,40 @@ const generateController = async (req, res) => {
       if (!accumulatedCode.trim()) {
         console.log(`⚠️ No code accumulated for ${currentComponentName}, skipping.`);
       } else {
+        // For compound components, ensure we have all subcomponents before stopping
+        if (COMPOUND_COMPONENTS[currentComponentName]) {
+          const shouldWait = shouldAccumulateMore(currentComponentName, accumulatedCode, componentStartTime);
+          
+          if (shouldWait) {
+            if (DEBUG_MODE) {
+              console.log(`🔄 Waiting for more subcomponents for ${currentComponentName}`);
+            }
+            return; // Don't stop yet, wait for more code
+          } else if (Date.now() - componentStartTime > MAX_COMPOUND_WAIT_TIME) {
+            // If we've exceeded wait time, mark as error
+            updateComponentState(currentComponentId, {
+              isStreaming: false,
+              isComplete: false,
+              error: 'COMPOUND_TIMEOUT',
+              code: accumulatedCode
+            });
+
+            res.write(`data: ${JSON.stringify({
+              type: 'error',
+              code: 'COMPOUND_TIMEOUT',
+              message: `Component ${currentComponentName} timed out waiting for subcomponents`,
+              metadata: createMetadata(currentComponentId, 'error')
+            })}\n\n`);
+
+            // Reset state and return
+            currentComponentId = null;
+            currentComponentName = null;
+            accumulatedCode = '';
+            componentStartTime = null;
+            return;
+          }
+        }
+
         if (validateComponent(accumulatedCode, currentComponentName)) {
           // Update component state
           updateComponentState(currentComponentId, {
@@ -374,7 +591,7 @@ const generateController = async (req, res) => {
           updateComponentState(currentComponentId, {
             isStreaming: false,
             isComplete: false,
-            error: 'Component validation failed'
+            error: 'VALIDATION_FAILED'
           });
         }
       }
@@ -433,27 +650,55 @@ const generateController = async (req, res) => {
         while ((match = buffer.match(MARKER_PATTERN))) {
           const markerFull = match[0];
           const markerType = match[1];          // START or END
-          const markerName = match[2].trim();   // e.g. RootLayout, Hero, etc. (now with trim)
+          const markerName = match[2].trim();   // e.g. Header, RootLayout, etc.
           const markerPosition = match[3] || ''; // e.g. header, main, etc.
 
-          // Validate markers with improved checks
+          // Instead of halting on an incomplete marker, we flush a partial update
           if (!validateMarkers(markerType, markerName, currentComponentName, buffer, match.index)) {
-            console.log('⏳ Waiting for complete component name');
-            return; // Wait for more data instead of skipping
+            console.warn('⚠️ Incomplete marker detected; emitting partial update.');
+            if (currentComponentId && accumulatedCode.trim()) {
+              res.write(`data: ${JSON.stringify({
+                type: 'content_block_delta',
+                metadata: createMetadata(currentComponentId, 'delta'),
+                delta: { text: accumulatedCode }
+              })}\n\n`);
+            }
+            // Remove the problematic marker from buffer and continue processing
+            const markerLength = markerFull.length;
+            buffer = buffer.slice(match.index + markerLength);
+            continue;
           }
 
           const matchIndex = match.index;
           const codeBeforeMarker = buffer.slice(0, matchIndex);
 
-          // If we see a new START while still inside a component, stop the old one
+          // If we see a new START while still inside a component, emit current code and stop
           if (currentComponentId && markerType === 'START') {
-            console.log(`⚠️ New component ${markerName} started while ${currentComponentName} is active - stopping current`);
+            console.log(`⚠️ New component ${markerName} started while ${currentComponentName} is active - emitting current`);
             accumulatedCode += codeBeforeMarker;
+            
+            // Emit the accumulated code before stopping
+            res.write(`data: ${JSON.stringify({
+              type: 'content_block_delta',
+              metadata: createMetadata(currentComponentId, 'delta'),
+              delta: { text: accumulatedCode }
+            })}\n\n`);
+            
             stopComponent();
           }
 
           if (currentComponentId) {
             accumulatedCode += codeBeforeMarker;
+            
+            // Emit accumulated code as a delta update
+            if (accumulatedCode.trim()) {
+              res.write(`data: ${JSON.stringify({
+                type: 'content_block_delta',
+                metadata: createMetadata(currentComponentId, 'delta'),
+                delta: { text: accumulatedCode }
+              })}\n\n`);
+              accumulatedCode = ''; // Reset after emitting
+            }
           }
 
           // Remove consumed portion from buffer
@@ -467,6 +712,16 @@ const generateController = async (req, res) => {
             if (markerName === currentComponentName) {
               const componentDuration = Date.now() - componentStartTime;
               console.log(`✅ Ending component ${markerName} after ${componentDuration}ms`);
+              
+              // Emit any remaining code before stopping
+              if (accumulatedCode.trim()) {
+                res.write(`data: ${JSON.stringify({
+                  type: 'content_block_delta',
+                  metadata: createMetadata(currentComponentId, 'delta'),
+                  delta: { text: accumulatedCode }
+                })}\n\n`);
+              }
+              
               stopComponent(componentDuration);
             } else {
               console.warn(`❌ END marker for ${markerName} but current is ${currentComponentName}`);

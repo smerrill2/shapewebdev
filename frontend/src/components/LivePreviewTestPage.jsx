@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import SimpleLivePreview from './SimpleLivePreview';
+import { cn } from '../lib/utils';
 
 const TEST_PROMPTS = {
   singleComponent: {
-    prompt: 'Create a simple header component',
+    prompt: 'Generate a savage baking page',
     style: 'modern and clean',
-    requirements: 'Just a header with a title and subtitle'
+    requirements: 'Go crazy on making whatever you want. I want to be able to sell so much fucking bread. 4 components MAX!' 
   },
   multiComponent: {
     prompt: 'Create a modern SaaS landing page with multiple sections',
@@ -309,88 +310,57 @@ export default function LivePreviewTestPage() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0B1121]">
-      <div className="w-[400px] p-4 border-r border-slate-700">
-        <div className="space-y-4">
-          <h2 className="text-xl font-bold text-slate-200">Live Preview Tests</h2>
-          
-          <div className="space-y-2">
-            <select
-              value={selectedTest}
-              onChange={(e) => setSelectedTest(e.target.value)}
-              className="w-full p-2 rounded bg-slate-800 text-slate-200 border border-slate-600"
-            >
-              {Object.keys(TEST_PROMPTS).map(key => (
-                <option key={key} value={key}>
-                  {key}
-                </option>
-              ))}
-            </select>
-
+    <div className="min-h-screen flex flex-col bg-[#0B1121]">
+      <div className="flex-none p-4 border-b border-slate-700">
+        <div className="max-w-7xl mx-auto">
+          <h1 className="text-2xl font-bold text-white mb-4">Live Preview Test Page</h1>
+          <div className="flex gap-4 items-center">
+            {Object.keys(TEST_PROMPTS).map(testKey => (
+              <button
+                key={testKey}
+                onClick={() => setSelectedTest(testKey)}
+                className={cn(
+                  "px-4 py-2 rounded-lg transition-colors",
+                  selectedTest === testKey
+                    ? "bg-purple-600 text-white"
+                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                )}
+              >
+                {testKey}
+              </button>
+            ))}
             <button
               onClick={() => runTest(selectedTest)}
               disabled={isLoading}
-              className={`w-full p-2 rounded ${
-                isLoading 
-                  ? 'bg-slate-700 text-slate-400' 
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
+              className={cn(
+                "px-4 py-2 rounded-lg transition-colors ml-auto",
+                isLoading
+                  ? "bg-slate-700 text-slate-400 cursor-not-allowed"
+                  : "bg-green-600 text-white hover:bg-green-700"
+              )}
             >
-              {isLoading ? 'Running Test...' : 'Run Test'}
+              {isLoading ? 'Generating...' : 'Generate'}
             </button>
-          </div>
-
-          {error && (
-            <div className="p-4 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm">
-              {error}
-            </div>
-          )}
-
-          <div className="mt-4">
-            <h3 className="text-lg font-semibold text-slate-300 mb-2">Events</h3>
-            <div className="h-[500px] overflow-y-auto bg-slate-800 rounded p-2">
-              {events.map((event, i) => (
-                <div 
-                  key={i} 
-                  className={`mb-2 text-sm p-2 rounded ${
-                    event.type === 'error' ? 'bg-red-900/30 text-red-200' : 'text-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={`${
-                      event.type === 'error' ? 'text-red-400' :
-                      event.type === 'content_block_start' ? 'text-blue-400' :
-                      event.type === 'content_block_stop' ? 'text-green-400' :
-                      'text-purple-400'
-                    }`}>
-                      {event.type}
-                    </span>
-                    {event.metadata?.componentId && (
-                      <span className="text-slate-400">- {event.metadata.componentId}</span>
-                    )}
-                  </div>
-                  {event.delta?.text && (
-                    <pre className="text-xs mt-1 whitespace-pre-wrap">
-                      {event.delta.text.slice(0, 100)}
-                      {event.delta.text.length > 100 ? '...' : ''}
-                    </pre>
-                  )}
-                  {event.message && (
-                    <div className="text-red-200 mt-1">{event.message}</div>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         </div>
       </div>
       
-      <div className="flex-1 p-4">
-        <SimpleLivePreview 
-          registry={registry}
-          streamingStates={streamingStates}
-        />
+      <div className="flex-1 overflow-auto">
+        <div className="max-w-7xl mx-auto p-4">
+          <div className="bg-slate-800/50 backdrop-blur rounded-lg overflow-hidden shadow-xl">
+            <SimpleLivePreview
+              registry={registry}
+              streamingStates={streamingStates}
+            />
+          </div>
+        </div>
       </div>
+      
+      {error && (
+        <div className="fixed bottom-4 right-4 bg-red-500/10 border border-red-500 text-red-500 p-4 rounded-lg">
+          {error}
+        </div>
+      )}
     </div>
   );
 } 

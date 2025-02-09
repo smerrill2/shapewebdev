@@ -18,8 +18,10 @@ You are helping generate a React landing page. Follow these exact requirements:
        </NavigationMenu>
      * NEVER nest NavigationMenu.List components inside each other
      * All components support dark mode and are fully accessible
+     * CRITICAL: Every <NavigationMenu.Link> MUST have non-empty text content
+     * CRITICAL: Never create empty <NavigationMenu.Link> components
    - REQUIRED: ALL Icons are available from Lucide, so ensure to use them through Icons namespace:
-     - Example icons: <Icons.Twitter />, <Icons.Linkedin />, <Icons.rocket />
+     - Example icons: <Icons.Twitter />, <Icons.Linkedin />, <Icons.Rocket />
      - Navigation: <Icons.Menu />, <Icons.ChevronRight />
      - NEVER use icon components directly (e.g., NO: <Twitter />)
    - REQUIRED: Use Placeholder components for ALL media content:
@@ -28,27 +30,46 @@ You are helping generate a React landing page. Follow these exact requirements:
      * ANY avatar MUST use <Placeholder.Avatar />
      * NO raw <img>, <video>, or background-image allowed
    - All components must be functional React components using hooks if needed
-   - NO raw HTML elements for buttons, inputs, etc - use our UI components
+   - NO raw HTML elements for buttons, inputs, etc – use our UI components
+   - CRITICAL: Every <Button> component MUST have either:
+     * At least one word of text content, or
+     * An icon plus text content
+     * NEVER create empty <Button> components
+     * Example: <Button>Sign Up</Button> or <Button><Icons.ArrowRight /> Learn More</Button>
 
 2. Style Requirements:
-   - Use ONLY Tailwind utility classes
-   - NO inline styles or style objects
-   - **Use percentage-based spacing for margins and padding** (e.g., \`pt-[10%]\`, \`px-[5%]\`)
-     * Do NOT rely on Tailwind's default spacing scale (e.g., no \`pt-4\` or \`p-8\`)
-   - For colors, use Tailwind's color palette
-   - For responsive design, use Tailwind breakpoints (sm:, md:, lg:)
-   - NO background-image CSS — use \`<Placeholder.Image />\` for images, and for the hero section background use gradients
-   - REQUIRED: For hero sections, use modern gradients instead of background images:
-     * Use Tailwind's gradient utilities (e.g., \`bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500\`)
-     * You can layer multiple gradients for more complex effects
-     * NO \`<Placeholder.Image />\` for hero section backgrounds
-     * MUST use relative positioning and proper z-index (z-0) for hero sections
-   - **Headers**:
-     * Must use \`sticky top-0\` instead of \`fixed\`
-     * Ensure the hero or main content is pushed down enough (\`pt-[some%]\`) so content does not overlap the header
-     * Keep the header layered above other sections with \`z-50\` or similar
-   - Make layering clear with z-index classes (hero below, header above, etc.)
-     * Avoid overlap by applying \`pt-[XX%]\` on hero or main to account for the header's height
+   - Use Tailwind CSS for styling with these guidelines:
+     * Full access to ALL Tailwind utility classes for maximum design flexibility
+     * Support both fixed (px, rem) and percentage-based spacing
+     * Use ANY Tailwind color classes (including specific shades like blue-500)
+     * Leverage ALL Tailwind's features: gradients, filters, transforms, animations
+     * Full responsive design using Tailwind's breakpoint system
+   
+   - Layout Structure (recommended but flexible):
+     * Headers:
+       - Use either sticky or fixed positioning based on design needs
+       - Consider z-index for proper layering
+       - Optional glass effects or solid backgrounds
+     * Sections:
+       - Flexible width and spacing strategies
+       - Can use container class or custom max-widths
+       - Adaptable padding and margins
+     * Responsive Design:
+       - Mobile-first approach recommended
+       - Use any breakpoint combinations needed
+       - Flexible layout patterns
+
+   - Best Practices:
+     * Keep dark mode support in mind
+     * Consider accessibility in color choices
+     * Use semantic class naming when possible
+     * Maintain consistent spacing patterns within components
+     * Always include colors to components e.g button, card etc., 
+
+   - Only Restrictions:
+     * NO inline styles or raw CSS (use Tailwind classes)
+     * NO raw HTML elements for components we provide (use our UI components)
+     * NO raw <img>, <video> tags (use Placeholder components)
 
 3. Structure:
    - Define each section as a named export function component
@@ -74,6 +95,7 @@ You are helping generate a React landing page. Follow these exact requirements:
    - IMPORTANT: Do NOT use Placeholder.Image for hero section backgrounds — use gradients instead
 
 6. Additional Requirements:
+"Remember: any string with an apostrophe must use double quotes!"
    ${requirements}
 
 Now, generate a landing page based on this prompt: ${prompt}
