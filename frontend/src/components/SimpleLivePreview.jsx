@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+// frontend/src/components/__tests__/SimpleLivePreview.jsx
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LiveProvider, LivePreview, LiveError } from 'react-live';
 import * as LucideIcons from 'lucide-react';
 import * as UIComponents from './ui';
 import { createUniversalNamespace } from './utils/createUniversalNamespace';
-import { extractFunctionDefinitions, completeFunctionContent } from './utils/babelTransformations';
+import { extractFunctionDefinitions, cleanCode, cleanCodeForLive } from './utils/babelTransformations';
+import * as Babel from '@babel/standalone';
+import DevOverlay from './DevOverlay';
 import {
   NavigationMenu,
   NavigationMenuList,
@@ -25,6 +28,34 @@ import {
   COMPONENT_STATUS,
   VALID_POSITIONS
 } from './utils/config';
+
+// Error boundary for handling component errors
+class EnhancedErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Component render error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-4 text-red-400 text-sm bg-red-950/20 rounded-lg">
+          <p className="font-medium">Failed to render component:</p>
+          <pre className="mt-2 text-xs overflow-auto">{this.state.error.message}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Global styles for proper height handling
 const GlobalStyles = () => (
@@ -86,7 +117,7 @@ const GlobalStyles = () => (
   </style>
 );
 
-// Component resolution logging
+// Component resolution logging helper (only once)
 const logComponentResolution = (name, type, details) => {
   if (DEBUG_MODE) {
     console.group(`🧩 Component Resolution: ${name}`);
@@ -96,626 +127,364 @@ const logComponentResolution = (name, type, details) => {
   }
 };
 
-// Replace the old extractFunctionDefinitions function with:
+// Re-export the Babel extraction function
 export { extractFunctionDefinitions } from './utils/babelTransformations';
 
-// Update cleanCode to use Babel transformations
-export const cleanCode = (rawCode, preserveMarkers = true) => {
-  if (!rawCode || typeof rawCode !== 'string') return '';
-  
-  console.group('🧹 Code Cleaning Process');
-  console.log('📥 Raw Code Input:', {
-    code: rawCode,
-    length: rawCode.length
-  });
+// Add debug logging helper at the top level
+const debugCode = (code, source) => {
+  if (DEBUG_MODE) {
+    console.group(`🎭 Live Preview Code: ${source}`);
+    console.log('Code length:', code?.length || 0);
+    console.log('Code contents:\n', code);
+    console.groupEnd();
+  }
+};
 
-  // Remove code fences and markers
-  let cleanedCode = rawCode
-    .replace(/```[a-z]*$/gm, '')
-    .replace(/\/\/\/\s*(START|END)\s+\w+(?:\s+position=\w+)?/gm, '')
-    .trim();
+const STREAMING_TIMEOUT = 10000; // Increase timeout to 10 seconds
 
-  // Extract and validate functions using Babel
-  const functions = extractFunctionDefinitions(cleanedCode);
+// Helper to assemble final code from registry components
+const assembleFinalCode = (components) => {
+  if (!components || components.size === 0) return '';
   
-  // Rebuild the code with validated functions
+  console.group('🔄 Assembling Final Code');
+  
+  // Combine all component code
   let finalCode = '';
-  for (const [name, func] of functions) {
-    if (func.complete) {
-      finalCode += func.content + '\n\n';
-    }
-  }
+  const componentArray = Array.from(components.values());
   
-  // Add render statement if needed
-  if (functions.size > 0 && !finalCode.includes('render(')) {
-    const mainComponent = Array.from(functions.keys())[functions.size - 1];
-    finalCode += `\nrender(<${mainComponent} />);`;
-  }
-  
-  console.log('📤 Cleaned Code Output:', {
-    code: finalCode,
-    length: finalCode.length,
-    functionCount: functions.size
+  // Sort components - layouts first, then by position (header, main, footer)
+  componentArray.sort((a, b) => {
+    if (a.isLayout && !b.isLayout) return -1;
+    if (!a.isLayout && b.isLayout) return 1;
+    
+    const positions = { header: 0, main: 1, footer: 2 };
+    return (positions[a.position] || 1) - (positions[b.position] || 1);
   });
-  console.groupEnd();
   
-  return finalCode;
-};
-
-// 2. Component Stubs (Phase 2 from Guide)
-const createStubComponent = (name, element = 'div', defaultProps = {}) => {
-  const Component = React.forwardRef(({ className, children, variant, size, ...props }, ref) => {
-    if (DEBUG_MODE) {
-      console.log(`🎨 Rendering ${name}`, { 
-        className, 
-        variant, 
-        size, 
-        hasChildren: !!children,
-        childrenType: children?.type,
-        props 
-      });
+  // Add each component's code, but strip any render statements
+  componentArray.forEach(component => {
+    if (component.code && component.code.trim()) {
+      // Remove any render statements from the component code
+      let code = component.code.replace(/render\s*\([^)]+\);?/g, '').trim();
+      finalCode += code + '\n\n';
     }
-    
-    // Enhanced variant and size handling with proper text contrast
-    let combinedClassName = className || '';
-    
-    if (variant) {
-      const variantMap = {
-        default: 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm',
-        outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        ghost: 'hover:bg-accent hover:text-accent-foreground',
-        link: 'text-primary underline-offset-4 hover:underline',
-        destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
-      };
-      
-      // Ensure text contrast for each variant
-      const contrastMap = {
-        default: 'text-white dark:text-primary-foreground',
-        outline: 'text-foreground',
-        secondary: 'text-white dark:text-secondary-foreground',
-        ghost: 'text-foreground',
-        link: 'text-primary dark:text-primary',
-        destructive: 'text-white'
-      };
-      
-      combinedClassName = cn(
-        combinedClassName,
-        variantMap[variant] || variantMap.default,
-        contrastMap[variant] || contrastMap.default
-      );
-    }
-    
-    if (size) {
-      const sizeMap = {
-        sm: 'h-9 px-3 text-sm',
-        md: 'h-10 px-4 py-2',
-        lg: 'h-11 px-8 text-base'
-      };
-      combinedClassName = cn(combinedClassName, sizeMap[size] || sizeMap.md);
-    }
-
-    // Add base button styles if this is a button
-    if (element === 'button') {
-      combinedClassName = cn(
-        'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background',
-        combinedClassName
-      );
-    }
-    
-    // Verify children for buttons and navigation links
-    if (DEBUG_MODE && (name === 'Button' || name === 'NavigationMenu.Link')) {
-      if (!children) {
-        console.error(`❌ ${name} rendered without children!`);
-      } else if (typeof children === 'string' && !children.trim()) {
-        console.error(`❌ ${name} rendered with empty text!`);
-      }
-    }
-    
-    return React.createElement(element, { 
-      ref,
-      className: combinedClassName || undefined,
-      ...defaultProps,
-      ...props,
-      children 
-    });
   });
-  Component.displayName = name;
-  return Component;
-};
-
-// Create compound component with both direct usage and sub-components
-const createCompoundComponent = (baseName, config) => {
-  const MainComponent = createStubComponent(baseName, config.Root?.element || 'div', config.Root?.props || {});
   
-  const subComponents = Object.entries(config).reduce((acc, [key, { element, props = {} }]) => {
-    acc[key] = createStubComponent(`${baseName}.${key}`, element, props);
-    return acc;
-  }, {});
-  
-  return Object.assign(MainComponent, subComponents);
-};
-
-// Create icon stubs with SVG elements
-const createIconStub = (name) => {
-  return createStubComponent(`Icons.${name}`, 'svg', {
-    width: '1em',
-    height: '1em',
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 2,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round'
-  });
-};
-
-// Debug overlay for development
-const DevOverlay = ({ registry, streamingStates, debug }) => {
-  if (!DEBUG_MODE) return null;
-
-  // Group components by status
-  const groupedComponents = Array.from(registry.components.entries()).reduce((acc, [id, comp]) => {
-    const state = streamingStates.get(id);
-    const status = state?.error ? COMPONENT_STATUS.ERROR : 
-                  state?.isComplete ? COMPONENT_STATUS.COMPLETE : 
-                  state?.isStreaming ? COMPONENT_STATUS.STREAMING : 
-                  COMPONENT_STATUS.PENDING;
-    if (!acc[status]) acc[status] = [];
-    acc[status].push({ id, comp, state });
-    return acc;
-  }, {});
-
-  return (
-    <div className="fixed bottom-0 right-0 bg-black/70 text-white p-4 max-w-sm max-h-[50vh] overflow-auto rounded-tl-lg text-xs font-mono">
-      <div className="font-semibold mb-2">Component States</div>
-      {Object.entries(groupedComponents).map(([status, items]) => (
-        <div key={status} className="mb-4">
-          <div className="text-[10px] uppercase tracking-wider opacity-50 mb-1">
-            {status} ({items.length})
-          </div>
-          {items.map(({ id, comp, state }) => {
-            const isCritical = CRITICAL_COMPONENTS.has(comp.name);
-            return (
-              <div key={id} className="mb-2">
-                <div className={cn(
-                  "flex items-center gap-2",
-                  state?.error && "text-red-400",
-                  state?.isComplete && "text-green-400",
-                  state?.isStreaming && "text-blue-400"
-                )}>
-                  <span>{comp.name}</span>
-                  {isCritical && (
-                    <span className="text-[10px] bg-red-500/20 text-red-300 px-1 rounded">
-                      critical
-                    </span>
-                  )}
-                  <span className="opacity-50">
-                    {state?.isStreaming ? "🔄" : 
-                     state?.isComplete ? "✅" : 
-                     state?.error ? "❌" : 
-                     "⏳"}
-                  </span>
-                </div>
-                {state?.error && (
-                  <div className="text-red-400 text-[10px] mt-1 pl-4 border-l border-red-500/30">
-                    {state.error === ERROR_STATES.COMPOUND_TIMEOUT ? (
-                      <div>
-                        <div className="font-medium">Timeout waiting for subcomponents</div>
-                        <div className="opacity-75 mt-0.5">Component took too long to complete</div>
-                      </div>
-                    ) : state.error === ERROR_STATES.VALIDATION_FAILED ? (
-                      <div>
-                        <div className="font-medium">Invalid component code</div>
-                        <div className="opacity-75 mt-0.5">Component failed validation</div>
-                      </div>
-                    ) : state.error === ERROR_STATES.INCOMPLETE_COMPOUND ? (
-                      <div>
-                        <div className="font-medium">Incomplete compound component</div>
-                        <div className="opacity-75 mt-0.5">Missing required subcomponents</div>
-                      </div>
-                    ) : (
-                      state.error
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ))}
-      <div className="mt-4 pt-4 border-t border-white/10 text-[10px] opacity-50">
-        Click component names to view details
-      </div>
-    </div>
-  );
-};
-
-// Enhanced error boundary with better error display and critical component handling
-class EnhancedErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error, errorInfo) {
-    if (DEBUG_MODE) {
-      console.error('🔥 Component Error:', {
-        message: error.message,
-        componentStack: errorInfo.componentStack,
-        fullError: error
-      });
+  // Add the default export for the last component
+  if (finalCode && componentArray.length > 0) {
+    const lastComponent = componentArray[componentArray.length - 1];
+    if (lastComponent.name) {
+      finalCode += `\nexport default ${lastComponent.name};`;
     }
   }
-
-  render() {
-    if (this.state.hasError) {
-      const { componentName } = this.props;
-      const isCritical = CRITICAL_COMPONENTS.has(componentName);
-
-      return (
-        <div 
-          data-testid="error-boundary"
-          className={cn(
-            "p-4 rounded",
-            isCritical 
-              ? "border-2 border-destructive bg-destructive/10" 
-              : "border border-destructive/50 bg-destructive/5"
-          )}
-        >
-          <div className="flex items-center gap-2">
-            <h3 className="text-destructive font-semibold">
-              {isCritical ? 'Critical Component Error' : 'Component Error'}
-            </h3>
-            <span className="text-xs text-destructive/70">
-              {componentName}
-            </span>
-          </div>
-          <p className="text-destructive/90 mt-2">
-            {this.state.error?.message}
-            {this.state.error?.code === ERROR_STATES.COMPOUND_TIMEOUT && (
-              <span className="block mt-1 text-sm">
-                Timed out waiting for subcomponents to arrive.
-              </span>
-            )}
-          </p>
-          {DEBUG_MODE && this.state.error?.componentStack && (
-            <pre className="mt-4 text-sm text-destructive/80 whitespace-pre-wrap overflow-auto max-h-[200px]">
-              {this.state.error.componentStack}
-            </pre>
-          )}
-          {isCritical && (
-            <div className="mt-4 text-sm text-destructive/90 flex items-center gap-2">
-              <span className="text-lg">⚠️</span>
-              This is a critical component. The page layout may be affected.
-            </div>
-          )}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// Create our universal component getter
-const getShadcnComponent = createUniversalNamespace();
-
-// Modify the createStreamingWrapper function to handle SSE chunks and positions
-const createStreamingWrapper = (components) => {
-  if (!Array.isArray(components)) {
-    console.error('Invalid components array:', components);
-    return '';
-  }
-
-  console.group(' Creating Streaming Wrapper');
-  console.log('📦 Components to Process:', components.length);
-
-  // Process all components, including streaming ones
-  const validComponents = components
-    .filter(comp => {
-      if (!comp || typeof comp.name !== 'string') {
-        console.warn('❌ Skipping invalid component:', comp);
-        return false;
-      }
-
-      // Extract metadata from markers with more lenient validation
-      const startMarker = comp.code.match(/\/\/\/\s*START\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=(\w+))?/m);
-      const endMarker = comp.code.match(/\/\/\/\s*END\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)/m);
-      const functionMatch = comp.code.match(/(?:export\s+(?:default\s+)?)?function\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*\(/);
-
-      // Extract function name even without export
-      const anyFunctionMatch = comp.code.match(/function\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*\(/);
-
-      const metadata = {
-        markerName: startMarker?.[1],
-        position: (startMarker?.[2] || 'main').toLowerCase(),
-        functionName: functionMatch?.[1] || anyFunctionMatch?.[1],
-        hasStartMarker: !!startMarker,
-        hasEndMarker: !!endMarker,
-        isComplete: !!startMarker && !!endMarker && !!functionMatch,
-        isStreaming: comp.streaming || false,
-        timestamp: Date.now()
-      };
-
-      // Allow streaming components even if incomplete
-      if (!metadata.hasStartMarker && !metadata.isStreaming) {
-        console.warn('❌ No start marker found:', metadata);
-        return false;
-      }
-
-      // For streaming components, be more lenient
-      const namesMatch = metadata.isStreaming ? 
-        true : // Accept any name during streaming
-        (metadata.markerName === metadata.functionName && metadata.functionName === comp.name);
-      
-      if (!namesMatch && !metadata.isStreaming) {
-        console.warn('❌ Name mismatch:', {
-          markerName: metadata.markerName,
-          functionName: metadata.functionName,
-          componentName: comp.name,
-          isStreaming: metadata.isStreaming
-        });
-        return false;
-      }
-
-      // Attach metadata for later use
-      comp.metadata = metadata;
-      return true;
-    });
-
-  // Generate ordered components maintaining streaming order
-  const componentDefinitions = validComponents
-    .map(comp => {
-      let cleanedCode = comp.code
-        .replace(/\/\/\/\s*START.*\n/gm, '')
-        .replace(/\/\/\/\s*END.*\n/gm, '')
-        .trim();
-
-      // For streaming components, ensure we have a valid function
-      if (comp.metadata.isStreaming && !cleanedCode.includes('function')) {
-        cleanedCode = `function ${comp.name}() {\n  return (\n    ${cleanedCode}\n  );\n}`;
-      }
-
-      // Add export if missing
-      if (!cleanedCode.includes('export')) {
-        cleanedCode = `export ${cleanedCode}`;
-      }
-
-      return cleanedCode;
-    })
-    .filter(Boolean)
-    .join('\n\n');
-
-  // Build the final code with proper layout structure
-  const finalCode = `
-// Component Definitions
-${componentDefinitions}
-
-// Main Preview Component
-function StreamingPreview() {
-  return (
-    <div className="flex flex-col min-h-screen">
-      ${validComponents.map(comp => 
-        `<${comp.name} key="${comp.name}" data-testid="preview-${comp.name}" data-position="${comp.metadata.position}" />`
-      ).join('\n        ')}
-    </div>
-  );
-}
-
-// Render the preview
-render(<StreamingPreview />);
-`;
-
-  if (DEBUG_MODE) {
-    console.group('📝 Streaming Wrapper Output');
-    console.log('Component Count:', validComponents.length);
-    console.log('Components:', validComponents.map(c => ({
+  
+  console.log('📦 Assembled Components:', {
+    componentCount: componentArray.length,
+    components: componentArray.map(c => ({
       name: c.name,
-      isComplete: c.metadata.isComplete,
-      isStreaming: c.metadata.isStreaming
-    })));
-    console.log('Final Code:\n', finalCode);
-    console.groupEnd();
-  }
-
+      hasCode: Boolean(c.code),
+      position: c.position
+    }))
+  });
+  
+  console.log('📄 Final Code:', finalCode);
   console.groupEnd();
+  
   return finalCode;
 };
 
-// 5. Preview Component
-const PreviewComponent = ({ code, scope }) => {
-  const cleanedCode = useMemo(() => {
-    if (DEBUG_MODE) {
-      console.group('🎭 Preview Component Code Processing');
-      console.log('🔄 Code Before Cleaning:', code);
-    }
-    
-    const result = cleanCode(code);
-    
-    if (DEBUG_MODE) {
-      console.log('✨ Code After Cleaning:', result);
-      console.groupEnd();
-    }
-    
-    return result;
-  }, [code]);
-  
-  const isStreaming = useMemo(() => {
-    const hasRootLayout = !cleanedCode.includes('RootLayout');
-    if (DEBUG_MODE) {
-      console.log('🌊 Streaming Status:', { 
-        isStreaming: hasRootLayout,
-        hasRootLayout: !hasRootLayout,
-        codeLength: cleanedCode.length
-      });
-    }
-    return hasRootLayout;
-  }, [cleanedCode]);
-
-  return (
-    <div className="w-full" data-testid="preview-container">
-      <GlobalStyles />
-      <LiveProvider
-        code={cleanedCode}
-        scope={scope}
-        noInline={true}
-      >
-        <EnhancedErrorBoundary componentName="LivePreview">
-          <LiveError className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-0 z-[100]" data-testid="preview-error" />
-          <div 
-            className={cn(
-              "w-full flex flex-col preview-root",
-              isStreaming && "space-y-8 p-4"
-            )}
-            data-testid="preview-content"
-          >
-            <LivePreview />
-          </div>
-        </EnhancedErrorBoundary>
-      </LiveProvider>
+// Add CodeDisplay component
+const CodeDisplay = ({ code, title }) => (
+  <div className="p-4 bg-slate-900/50 rounded-lg mb-4">
+    <div className="flex items-center justify-between mb-2">
+      <h3 className="text-sm font-medium text-slate-200">{title}</h3>
     </div>
-  );
-};
+    <pre className="text-sm bg-slate-900 p-4 rounded overflow-auto max-h-[300px]">
+      <code className="text-slate-300">{code}</code>
+    </pre>
+  </div>
+);
 
-// Add debug logging utilities at the top after imports
-const debugLog = (section, data) => {
-  if (DEBUG_MODE) {
-    console.group(`🔍 ${section}`);
-    console.log(JSON.stringify(data, null, 2));
-    console.groupEnd();
+// Add new component buffer class
+class ComponentCodeBuffer {
+  constructor() {
+    this.buffers = new Map();
   }
-};
 
-const debugComponent = (name, props, state) => {
-  if (DEBUG_MODE) {
-    console.group(`🧩 Component Debug: ${name}`);
-    console.log('Props:', props);
-    console.log('State:', state);
-    console.groupEnd();
-  }
-};
-
-// 6. Main Component
-const SimpleLivePreview = ({ registry, streamingStates = new Map() }) => {
-  const [stableCode, setStableCode] = useState('');
-  const [errors, setErrors] = useState(new Map());
-
-  // Add debug logging for streaming states
-  useEffect(() => {
-    if (DEBUG_MODE) {
-      console.group('🌊 Streaming States Update');
-      console.log('Current States:', Object.fromEntries(streamingStates));
-      console.log('Registry Size:', registry?.components?.size);
-      console.groupEnd();
-    }
-  }, [streamingStates, registry?.components?.size]);
-
-  // Handle streaming state with debug
-  const hasStreamingComponents = useMemo(() => {
-    const streaming = streamingStates && 
-      Array.from(streamingStates.values()).some(state => state.isStreaming);
-    
-    if (DEBUG_MODE) {
-      console.log('🔄 Streaming Components Check:', {
-        hasStreaming: streaming,
-        states: Object.fromEntries(streamingStates),
-        timestamp: new Date().toISOString()
+  startComponent(id) {
+    if (!this.buffers.has(id)) {
+      this.buffers.set(id, {
+        code: '',
+        isComplete: false,
+        lastFunctionDeclaration: null
       });
     }
-    
-    return streaming;
-  }, [streamingStates]);
+  }
 
-  // Update the main effect to handle streaming better and add debugging
+  appendCode(id, newCode) {
+    const buffer = this.buffers.get(id);
+    if (!buffer) return;
+
+    // Only check for duplicate function declarations, don't transform
+    const funcDecl = newCode.match(/(?:export\s+)?(?:function|const)\s+[A-Z][A-Za-z0-9]*\s*(?:\(|=)/);
+    if (funcDecl) {
+      if (buffer.lastFunctionDeclaration === funcDecl[0]) {
+        // Skip duplicate function declaration
+        return;
+      }
+      buffer.lastFunctionDeclaration = funcDecl[0];
+    }
+
+    // Store raw code
+    buffer.code += newCode;
+  }
+
+  completeComponent(id) {
+    const buffer = this.buffers.get(id);
+    if (buffer) {
+      buffer.isComplete = true;
+    }
+  }
+
+  getCode(id) {
+    return this.buffers.get(id)?.code || '';
+  }
+
+  isComplete(id) {
+    return this.buffers.get(id)?.isComplete || false;
+  }
+
+  clear() {
+    this.buffers.clear();
+  }
+}
+
+//////////////////////////////////////////////////////////////////////
+// Below is the SimpleLivePreview Component.
+//////////////////////////////////////////////////////////////////////
+const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreamingStates, onShowCode }) => {
+  const [stableCode, setStableCode] = useState('');
+  const streamingTimersRef = useRef(new Map());
+  const previousCodeRef = useRef('');
+  const codeBufferRef = useRef(new ComponentCodeBuffer());
+
+  // Handle streaming deltas
+  useEffect(() => {
+    const handleStreamDelta = (event) => {
+      const { type, metadata, delta } = event;
+      
+      if (type === 'content_block_delta' && metadata?.componentId && delta?.text) {
+        codeBufferRef.current.startComponent(metadata.componentId);
+        codeBufferRef.current.appendCode(metadata.componentId, delta.text);
+      }
+      
+      if (type === 'content_block_stop' && metadata?.componentId) {
+        codeBufferRef.current.completeComponent(metadata.componentId);
+      }
+    };
+
+    window.addEventListener('stream_delta', handleStreamDelta);
+    return () => window.removeEventListener('stream_delta', handleStreamDelta);
+  }, []);
+
+  // Update stableCode when registry or streamingStates change
   useEffect(() => {
     if (!registry?.components) return;
     
-    const completeComponents = Array.from(registry.components.entries())
-      .filter(([id]) => {
-        const state = streamingStates?.get(id);
-        const isValid = state?.isComplete || state?.isStreaming;
-        
-        if (DEBUG_MODE) {
-          console.log(`📦 Component ${id} State:`, {
-            isComplete: state?.isComplete,
-            isStreaming: state?.isStreaming,
-            isValid,
-            timestamp: new Date().toISOString()
+    // Only update if we have any complete components
+    const hasCompleteComponents = Array.from(streamingStates.values())
+      .some(state => state.isComplete && !state.isStreaming);
+      
+    if (hasCompleteComponents) {
+      // Use buffered code instead of raw registry code
+      const components = new Map();
+      registry.components.forEach((component, id) => {
+        const bufferedCode = codeBufferRef.current.getCode(id);
+        if (bufferedCode) {
+          // Store raw code without any transformations
+          components.set(id, {
+            ...component,
+            code: bufferedCode,
+            isComplete: codeBufferRef.current.isComplete(id)
           });
+        } else {
+          components.set(id, component);
         }
-        
-        return isValid;
-      })
-      .map(([_, component]) => component);
-
-    if (completeComponents.length > 0) {
-      // Find RootLayout but don't wait for it to be complete
-      const rootLayout = completeComponents.find(c => c.isLayout);
-      const otherComponents = completeComponents.filter(c => !c.isLayout);
-
-      if (DEBUG_MODE) {
-        console.group('🏗 Component Assembly');
-        console.log('Root Layout:', rootLayout);
-        console.log('Other Components:', otherComponents);
-        console.groupEnd();
+      });
+      
+      const finalCode = assembleFinalCode(components);
+      
+      // Only update if code has changed
+      if (finalCode !== previousCodeRef.current) {
+        previousCodeRef.current = finalCode;
+        debugCode(finalCode, 'New Stable Code');
+        setStableCode(finalCode);
       }
-
-      let finalCode;
-      if (rootLayout && streamingStates.get('root_layout')?.isComplete) {
-        // Log complete root layout
-        if (DEBUG_MODE) {
-          console.group('🎯 Root Layout Complete');
-          console.log('Final Root Layout Code:');
-          console.log(rootLayout.code);
-          console.log('All Components:', completeComponents);
-          console.groupEnd();
-        }
-
-        const componentCode = [
-          ...otherComponents.map(comp => cleanCode(comp.code)),
-          cleanCode(rootLayout.code)
-        ]
-          .filter(Boolean)
-          .join('\n\n');
-
-        finalCode = `${componentCode}\n\nrender(<RootLayout />);`;
-      } else {
-        // Use streaming wrapper with debug
-        if (DEBUG_MODE) {
-          console.group('🌊 Streaming Wrapper Assembly');
-          console.log('Components to Stream:', completeComponents);
-          console.groupEnd();
-        }
-        
-        finalCode = createStreamingWrapper(completeComponents);
-      }
-
-      if (DEBUG_MODE) {
-        console.group('📝 Final Code Assembly');
-        console.log('Code Length:', finalCode.length);
-        console.log('Component Count:', completeComponents.length);
-        console.log('Final Code:\n', finalCode);
-        console.groupEnd();
-      }
-
-      setStableCode(finalCode);
     }
   }, [registry?.components, streamingStates]);
 
-  // Create a memoized scope that includes all necessary dependencies
+  // Handle message_stop event
+  useEffect(() => {
+    const handleMessageStop = () => {
+      if (DEBUG_MODE) {
+        console.log('🛑 Stream ended, finalizing components');
+      }
+      // When stream ends, mark all components as complete if they have code
+      setStreamingStates(prev => {
+        const next = new Map(prev);
+        Array.from(prev.keys()).forEach(id => {
+          const bufferedCode = codeBufferRef.current.getCode(id);
+          if (bufferedCode) {
+            next.set(id, { 
+              isStreaming: false, 
+              isComplete: true,
+              error: null 
+            });
+          }
+        });
+        return next;
+      });
+      
+      // Clear the code buffer
+      codeBufferRef.current.clear();
+    };
+
+    window.addEventListener('message_stop', handleMessageStop);
+    return () => window.removeEventListener('message_stop', handleMessageStop);
+  }, []);
+
+  // Memoize scope (adjust as needed)
   const enhancedScope = useMemo(() => ({
-    ...ESSENTIAL_SCOPE,
     React,
+    ...UIComponents,
     NavigationMenu,
+    NavigationMenuList,
+    NavigationMenuItem,
+    NavigationMenuContent,
+    NavigationMenuTrigger,
+    NavigationMenuLink,
+    NavigationMenuViewport,
     Button,
     Card,
+    Link,
     LucideIcons,
-    Link
-  }), []);
+    cn,
+    render: (component) => component,
+    // Add PriceTag component to scope if it exists in registry
+    ...(registry?.components?.get('price_tag') ? {
+      PriceTag: (props) => {
+        const PriceTagComponent = new Function('React', 'cn', registry.components.get('price_tag').code + '\nreturn PriceTag;')(React, cn);
+        return React.createElement(PriceTagComponent, props);
+      }
+    } : {}),
+    // Add any other UI components or utilities needed
+  }), [registry?.components]);
+
+  // Transform code before passing to LiveProvider - this is our SINGLE transformation point
+  const transformedCode = useMemo(() => {
+    if (!stableCode) return '';
+    try {
+      // Log the code before transformation in debug mode
+      if (DEBUG_MODE) {
+        console.group('🔄 Code Transformation');
+        console.log('Input code:', stableCode);
+      }
+
+      // Single transformation using cleanCodeForLive
+      const result = cleanCodeForLive(stableCode);
+
+      // Log the transformed code in debug mode
+      if (DEBUG_MODE) {
+        console.log('Transformed code:', result);
+        console.groupEnd();
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error transforming code:', error);
+      return stableCode;
+    }
+  }, [stableCode]);
+
+  // Add Babel transform function - only for JSX transformation
+  const transformCode = useMemo(() => (code) => {
+    try {
+      // Log the input code in debug mode
+      if (DEBUG_MODE) {
+        console.group('🔄 Babel JSX Transformation');
+        console.log('Input code:', code);
+      }
+
+      // First format the code to ensure proper structure
+      let formattedCode = code
+        // Split into lines and trim each line
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line)  // Remove empty lines
+        .join('\n');
+
+      // Fix JSX formatting issues
+      formattedCode = formattedCode
+        // Fix className attributes
+        .replace(/className=\{([^}]+)\}/g, (match, content) => {
+          // Remove extra curly braces in className values
+          const cleaned = content.replace(/[{}]/g, '').trim();
+          return `className="${cleaned}"`;
+        })
+        // Add spaces around JSX expressions
+        .replace(/\{(\w+)\}/g, '{ $1 }')
+        // Fix self-closing tags
+        .replace(/(\s*)\/>/, ' />')
+        // Ensure proper spacing in component props
+        .replace(/=\{/g, '={ ')
+        .replace(/\}/g, ' }')
+        // Fix render statement
+        .replace(/render\((.*?)\);?$/, (match, content) => {
+          return `render(${content.trim()});`;
+        });
+
+      // Transform with Babel
+      const result = Babel.transform(formattedCode, {
+        presets: [
+          ['react', {
+            runtime: 'classic',
+            development: true,
+            throwIfNamespace: false
+          }]
+        ],
+        plugins: ['transform-react-jsx'],
+        filename: 'live.js',
+        sourceType: 'script',
+        configFile: false,
+        babelrc: false,
+        retainLines: true,
+        compact: false,
+        minified: false,
+        comments: true,
+        parserOpts: {
+          strictMode: false,
+          allowReturnOutsideFunction: true,
+          allowSuperOutsideMethod: true
+        }
+      }).code;
+
+      // Log the transformed code in debug mode
+      if (DEBUG_MODE) {
+        console.log('Transformed code:', result);
+        console.groupEnd();
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Babel transform error:', error);
+      // On error, try to format and return the original code
+      return code
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line)
+        .join('\n');
+    }
+  }, []);
 
   if (!registry?.components) {
     return (
@@ -726,211 +495,66 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map() }) => {
   }
 
   return (
-    <div className="h-full flex flex-col relative isolate">
-      <div className="text-sm p-2 bg-muted border-b sticky top-0 z-[60]">
-        Live Preview {DEBUG_MODE && `(${registry?.components?.size || 0} components)`}
-      </div>
-      <div className="flex-1 relative w-full overflow-auto">
-        {hasStreamingComponents && !stableCode && (
-          <div className="p-4 text-muted-foreground bg-muted rounded-lg mb-4">
-            <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-current" />
-              <span>
-                Generating components... 
-                {DEBUG_MODE && `(${Array.from(streamingStates.entries())
-                  .filter(([_, state]) => state.isStreaming)
-                  .length} streaming)`}
-              </span>
-            </div>
+    <EnhancedErrorBoundary>
+      <div className="h-full flex flex-col relative isolate">
+        <div className="text-sm p-2 bg-muted border-b sticky top-0 z-[60] flex justify-between items-center">
+          <span>Live Preview {DEBUG_MODE && `(${registry.components.size} components)`}</span>
+          <div className="flex gap-2">
+            {Array.from(registry.components.values()).map(component => (
+              <button
+                key={component.name}
+                onClick={() => onShowCode?.(component)}
+                className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded"
+              >
+                Show {component.name}
+              </button>
+            ))}
           </div>
-        )}
-        {stableCode && (
-          <div className="preview-isolation-wrapper" data-testid="preview-container">
-            <GlobalStyles />
-            <LiveProvider
-              code={stableCode}
-              scope={enhancedScope}
-              noInline={true}
-            >
-              <EnhancedErrorBoundary componentName="LivePreview">
+        </div>
+        <div className="flex-1 relative w-full overflow-auto">
+          {(!transformedCode || transformedCode.length === 0) && Array.from(streamingStates.values()).some(state => state.isStreaming) && (
+            <div className="p-4 text-muted-foreground bg-muted rounded-lg mb-4">
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-current" />
+                <span>Generating components...</span>
+              </div>
+            </div>
+          )}
+          {transformedCode && (
+            <div className="preview-isolation-wrapper" data-testid="preview-container">
+              <GlobalStyles />
+              <LiveProvider 
+                code={transformedCode} 
+                scope={enhancedScope} 
+                noInline={true}  // Change to true to let LiveProvider handle rendering
+                transformCode={transformCode}
+              >
                 <LiveError 
-                  className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-12 z-20" 
+                  className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-0 z-[100]" 
                   data-testid="preview-error" 
                 />
                 <div 
-                  className={cn(
-                    "w-full preview-root",
-                    hasStreamingComponents && "space-y-8"
-                  )}
+                  className={cn("w-full preview-root", "space-y-8 p-4")} 
                   data-testid="preview-content"
                 >
                   <LivePreview />
                 </div>
-              </EnhancedErrorBoundary>
-            </LiveProvider>
-          </div>
-        )}
+              </LiveProvider>
+            </div>
+          )}
+        </div>
+        <DevOverlay 
+          registry={registry} 
+          streamingStates={streamingStates} 
+          debug={DEBUG_MODE} 
+        />
       </div>
-      <DevOverlay 
-        registry={registry} 
-        streamingStates={streamingStates}
-        debug={DEBUG_MODE}
-      />
-    </div>
+    </EnhancedErrorBoundary>
   );
 };
 
-// Add debug warning utility
-const warnEmptyElement = (type, props) => {
-  if (DEBUG_MODE) {
-    console.group('⚠️ Empty Element Warning');
-    console.warn(`${type} rendered with no children!`);
-    console.log('Props:', props);
-    console.groupEnd();
-  }
-};
+//////////////////////////////////////////////////////////////////////
+// Remove duplicate helper definitions below (they were already declared above)
+//////////////////////////////////////////////////////////////////////
 
-// Update the ESSENTIAL_SCOPE with enhanced navigation handling
-const ESSENTIAL_SCOPE = {
-  ...React,
-  
-  // Navigation components with only empty state handling
-  NavigationMenu: Object.assign(
-    (props) => {
-      logComponentResolution('NavigationMenu', 'root', { props });
-      return <NavigationMenu {...props} />;
-    },
-    {
-      List: (props) => {
-        logComponentResolution('NavigationMenu.List', 'subcomponent', { props });
-        return <NavigationMenuList {...props} />;
-      },
-      Item: (props) => {
-        logComponentResolution('NavigationMenu.Item', 'subcomponent', { props });
-        if (!props.children) {
-          warnEmptyElement('NavigationMenu.Item', props);
-        }
-        return <NavigationMenuItem {...props} />;
-      },
-      Link: ({ children, ...props }) => {
-        logComponentResolution('NavigationMenu.Link', 'subcomponent', { props });
-        
-        // Only handle empty children, no styling
-        if (!children || (typeof children === 'string' && !children.trim())) {
-          warnEmptyElement('NavigationMenu.Link', props);
-          // Provide fallback content based on href or a default
-          const fallbackText = props.href ? 
-            props.href.replace(/[#\/]/g, '').split('-').map(
-              word => word.charAt(0).toUpperCase() + word.slice(1)
-            ).join(' ') : 
-            'Menu Link';
-            
-          children = DEBUG_MODE ? 
-            <span>
-              {fallbackText}
-              <span className="text-xs text-yellow-500">[Empty Link]</span>
-            </span> : 
-            fallbackText;
-        }
-
-        return <NavigationMenuLink {...props}>{children}</NavigationMenuLink>;
-      },
-      Content: props => <NavigationMenuContent {...props} />,
-      Trigger: props => <NavigationMenuTrigger {...props} />,
-      Viewport: props => <NavigationMenuViewport {...props} />
-    }
-  ),
-  
-  // Button with only empty state handling
-  Button: ({ children, ...props }) => {
-    if (!children || (typeof children === 'string' && !children.trim())) {
-      warnEmptyElement('Button', props);
-      children = DEBUG_MODE ? 
-        <span>
-          Button
-          <span className="text-xs text-yellow-500">[Empty Button]</span>
-        </span> : 
-        'Button';
-    }
-
-    return <Button {...props}>{children}</Button>;
-  },
-  
-  // All shadcn components through universal namespace with logging
-  ...Object.fromEntries(
-    ['Button', 'Card', 'CardHeader', 'CardTitle', 'CardDescription', 'CardContent', 'CardFooter']
-    .map(name => [name, (...props) => {
-      logComponentResolution(name, 'shadcn', { props });
-      const Component = getShadcnComponent(name);
-      return <Component {...props} />;
-    }])
-  ),
-  
-  // Make ALL Lucide icons available through Icons namespace with logging
-  Icons: new Proxy(LucideIcons, {
-    get: (target, prop) => {
-      logComponentResolution(`Icons.${prop}`, 'icon', { exists: !!target[prop] });
-      return target[prop] || (() => {
-        console.warn(`Icon ${prop} not found`);
-        return null;
-      });
-    }
-  }),
-
-  // Simple Link component for basic navigation with logging
-  Link: ({ href, children, ...props }) => {
-    logComponentResolution('Link', 'basic', { href });
-    return <a href={href} {...props}>{children}</a>;
-  },
-
-  // Placeholder components with logging
-  Placeholder: {
-    Image: ({ width, height, label, className = '', ...props }) => {
-      logComponentResolution('Placeholder.Image', 'placeholder', { width, height, label });
-      return (
-        <div
-          className={cn(
-            'bg-slate-100 dark:bg-slate-800 flex items-center justify-center',
-            className
-          )}
-          style={{ width, height }}
-          {...props}
-        >
-          {label}
-        </div>
-      );
-    },
-    Video: ({ width, height, label, className = '', ...props }) => {
-      logComponentResolution('Placeholder.Video', 'placeholder', { width, height, label });
-      return (
-        <div
-          className={cn(
-            'bg-slate-100 dark:bg-slate-800 flex items-center justify-center',
-            className
-          )}
-          style={{ width, height }}
-          {...props}
-        >
-          {label}
-        </div>
-      );
-    },
-    Avatar: ({ size = '64px', label, className = '', ...props }) => {
-      logComponentResolution('Placeholder.Avatar', 'placeholder', { size, label });
-      return (
-        <div
-          className={cn(
-            'bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center',
-            className
-          )}
-          style={{ width: size, height: size }}
-          {...props}
-        >
-          {label}
-        </div>
-      );
-    }
-  }
-};
-
-export default SimpleLivePreview; 
+export default SimpleLivePreview;
