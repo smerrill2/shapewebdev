@@ -148,6 +148,19 @@ async function generate(prompt, style, requirements) {
           console.log('🔍 Raw Claude chunk:', chunk);
 
           switch (chunk.type) {
+            case 'message_start':
+              // Forward the message_start event with metadata
+              stream.push(JSON.stringify({
+                type: 'message_start',
+                metadata: {
+                  id: chunk.message?.id,
+                  model: chunk.message?.model,
+                  role: chunk.message?.role,
+                  timestamp: Date.now()
+                }
+              }));
+              break;
+
             case 'content_block_start':
             case 'content_block_stop':
             case 'message_stop':
@@ -176,7 +189,7 @@ async function generate(prompt, style, requirements) {
 
             default:
               // Log unhandled types but don't break the stream
-              console.log('Unhandled chunk type:', chunk.type);
+              console.log('⚠️ Unhandled chunk type:', chunk.type);
               break;
           }
         }

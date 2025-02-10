@@ -2,27 +2,6 @@ const { generate } = require('../utils/aiClient');
 
 // Constants for validation and safety
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer size
-const VALID_POSITIONS = [
-  // Layout positions
-  'header',
-  'main',
-  'footer',
-  'nav',
-  'sidebar',
-  // Content sections
-  'hero',
-  'features',
-  'testimonials',
-  'pricing',
-  'cta',
-  'contact',
-  'content',
-  'stats',
-  'faq',
-  'team',
-  // Special handling
-  'custom'
-];
 const MAX_COMPONENT_TIME = 30000; // 30s timeout
 const MAX_COMPOUND_WAIT_TIME = 10000; // 10s max wait for subcomponents
 
@@ -89,188 +68,217 @@ const DEBUG_MODE = process.env.NODE_ENV === 'development';
 const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([\w]+))?\s*$/m;
 const INCOMPLETE_MARKER = /\/\/\/\s*(START|END)\s*$/m;
 
-// Add validation for component names
-const VALID_COMPONENT_NAME = /^[A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?$/;
+// Add validation for component names with H prefix
+const VALID_COMPONENT_NAME = /^(?!H+[A-Z])[A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?$/;
 
 // Add test ID validation
 const isTestId = (id) => id.startsWith('test-');
 
-// Validate complete component names with improved checks
-const isCompleteComponentName = (name, buffer, matchIndex) => {
-  // Basic validation
-  if (!name || typeof name !== 'string') return false;
-  
-  // Must match our valid component name pattern
-  if (!VALID_COMPONENT_NAME.test(name)) {
-    console.warn('❌ Invalid component name format:', name);
-    return false;
-  }
-  
-  // Check for export function following the marker
-  const afterMatch = buffer.slice(matchIndex).split('\n')[1];
-  if (afterMatch && afterMatch.trim().startsWith('export')) {
-    // Verify the function name matches our component name exactly
-    const functionMatch = afterMatch.match(/export\s+(?:default\s+)?function\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*\(/);
-    if (functionMatch && functionMatch[1] !== name) {
-      console.warn('❌ Component name does not match function name:', {
-        componentName: name,
-        functionName: functionMatch[1]
-      });
-      return false;
-    }
-  }
-
-  return true;
+// Add component alias mapping
+const COMPONENT_ALIASES = {
+  'Navigation': 'Header',
+  'Nav': 'Header',
+  'NavigationBar': 'Header',
+  'Navbar': 'Header'
 };
 
-// Enhanced marker validation
+/**
+ * MarkerValidator: A unified class to handle all marker validation logic
+ */
+class MarkerValidator {
+  static MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([\w]+))?\s*$/m;
+  static INCOMPLETE_MARKER = /\/\/\/\s*(START|END)\s*$/m;
+  static VALID_COMPONENT_NAME = /^(?!H+[A-Z])[A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?$/;
+
+  /**
+   * Validates a marker string and returns a structured result
+   * @param {string} markerStr - The full marker string to validate
+   * @param {string} currentComponentName - The name of the current active component (for END markers)
+   * @param {string} buffer - The full code buffer (for context validation)
+   * @param {number} matchIndex - The index where the marker was found
+   * @returns {{ isValid: boolean, type: string, name: string, position: string, error?: string }}
+   */
+  static validateMarker(markerStr, currentComponentName = null, buffer = '', matchIndex = 0) {
+    // Default invalid result
+    const invalidResult = { isValid: false, type: '', name: '', position: '', error: 'Invalid marker format' };
+
+    if (!markerStr || typeof markerStr !== 'string') {
+      return { ...invalidResult, error: 'Marker must be a non-empty string' };
+    }
+
+    // Check for incomplete markers first
+    if (this.INCOMPLETE_MARKER.test(markerStr)) {
+      return { ...invalidResult, error: 'Incomplete marker detected' };
+    }
+
+    // Extract marker components
+    const match = markerStr.match(this.MARKER_PATTERN);
+    if (!match) {
+      return { ...invalidResult, error: 'Marker does not match required pattern' };
+    }
+
+    const [, type, name, position = 'main'] = match;
+    
+    // Clean the component name (remove H prefixes)
+    const cleanName = name.replace(/^H+/, '');
+
+    // Validate component name format
+    if (!this.VALID_COMPONENT_NAME.test(cleanName)) {
+      return { ...invalidResult, error: `Invalid component name format: ${name}` };
+    }
+
+    // For END markers, validate against current component
+    if (type === 'END') {
+      if (!currentComponentName) {
+        return { ...invalidResult, error: 'END marker without active component' };
+      }
+
+      const cleanCurrentName = currentComponentName.replace(/^H+/, '');
+      if (cleanName !== cleanCurrentName) {
+        return { ...invalidResult, error: `END marker mismatch: expected ${cleanCurrentName}, got ${cleanName}` };
+      }
+    }
+
+    // For START markers, validate the following code context
+    if (type === 'START' && buffer) {
+      const afterMatch = buffer.slice(matchIndex).split('\n')[1];
+      if (afterMatch && afterMatch.trim().startsWith('export')) {
+        const functionMatch = afterMatch.match(/export\s+(?:default\s+)?function\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*\(/);
+        if (functionMatch && functionMatch[1] !== cleanName) {
+          return { ...invalidResult, error: `Component name does not match function name: ${functionMatch[1]}` };
+        }
+      }
+    }
+
+    // All validations passed
+    return {
+      isValid: true,
+      type,
+      name: cleanName,
+      position: position.toLowerCase(),
+      error: null
+    };
+  }
+
+  /**
+   * Helper method to validate just the component name
+   */
+  static isValidComponentName(name) {
+    if (!name || typeof name !== 'string') return false;
+    const cleanName = name.replace(/^H+/, '');
+    return this.VALID_COMPONENT_NAME.test(cleanName);
+  }
+
+  /**
+   * Helper method to normalize component names
+   */
+  static normalizeComponentName(name) {
+    return name.replace(/^H+/, '');
+  }
+}
+
+// Replace the old validation functions with the new unified approach
 const validateMarkers = (markerType, markerName, currentComponentName, buffer, matchIndex) => {
-  if (!markerName || !markerType) {
-    console.warn('❌ Invalid marker format:', { markerType, markerName });
-    return false;
-  }
-
-  // Validate component name format
-  if (!VALID_COMPONENT_NAME.test(markerName)) {
-    console.warn('❌ Invalid component name format:', markerName);
-    return false;
-  }
-
-  if (markerType === 'END' && !currentComponentName) {
-    console.warn('❌ END marker without active component');
-    return false;
-  }
-
-  if (markerType === 'END' && markerName !== currentComponentName) {
-    console.warn('❌ END marker mismatch:', {
-      expected: currentComponentName,
-      received: markerName
-    });
-    return false;
-  }
-
-  // Check for incomplete markers
-  if (INCOMPLETE_MARKER.test(markerName)) {
-    console.warn('❌ Incomplete marker detected');
-    return false;
-  }
-
-  // Validate complete component name
-  if (!isCompleteComponentName(markerName, buffer, matchIndex)) {
-    console.warn('❌ Invalid component name:', markerName);
-    return false;
-  }
-
-  return true;
+  const result = MarkerValidator.validateMarker(
+    `/// ${markerType} ${markerName}`,
+    currentComponentName,
+    buffer,
+    matchIndex
+  );
+  return result.isValid;
 };
 
-// Component ID generation with improved normalization
-const getComponentId = (componentName) => {
-  // Ensure we have a valid component name
-  if (!VALID_COMPONENT_NAME.test(componentName)) {
-    console.warn('⚠️ Invalid component name format in ID generation:', componentName);
-    return `comp_invalid_${Date.now()}`;
-  }
-
-  // Special case for RootLayout
-  if (componentName === 'RootLayout') {
-    return 'comp_rootlayout';
-  }
-
-  // Normalize the name
-  return `comp_${componentName.toLowerCase()}`;
+const validateMarker = (marker, currentComponentName) => {
+  const result = MarkerValidator.validateMarker(marker, currentComponentName);
+  return result.isValid;
 };
 
-// Position normalization helper
-const normalizePosition = (position) => {
-  if (!position) {
-    if (DEBUG_MODE) console.log('📍 No position provided, defaulting to main');
-    return 'main';
-  }
-
-  // Special handling for test components
-  if (position.startsWith('test-') || position.toLowerCase().includes('test')) {
-    if (DEBUG_MODE) console.log('📍 Test component detected, using main position');
-    return 'main';
-  }
-  
-  const normalized = position.toLowerCase().trim();
-  const final = VALID_POSITIONS.includes(normalized) ? normalized : 'custom';
-  
-  if (DEBUG_MODE) {
-    console.log('📍 Position normalization:', {
-      original: position,
-      normalized,
-      final,
-      isValid: VALID_POSITIONS.includes(normalized),
-      isTestComponent: position.startsWith('test-')
-    });
-  }
-  
-  return final;
+const isCompleteComponentName = (name, buffer, matchIndex) => {
+  return MarkerValidator.isValidComponentName(name);
 };
 
-// Update getComponentMetadata to use normalized positions
+// Update the getComponentMetadata function to use the new validator
 const getComponentMetadata = (chunk, existingMetadata = null) => {
-  if (DEBUG_MODE) {
-    console.log('🔍 Processing component metadata:', {
-      hasExistingMetadata: !!existingMetadata,
-      chunkMetadata: chunk.metadata,
-      text: chunk.delta?.text?.slice(0, 100) // First 100 chars for context
-    });
-  }
-
-  // If chunk already has metadata, validate and return it
   if (chunk.metadata?.componentName && chunk.metadata.componentName !== 'UnknownComponent') {
-    const position = normalizePosition(chunk.metadata.position);
-    if (DEBUG_MODE) {
-      console.log('✅ Using existing metadata with normalized position:', {
-        componentName: chunk.metadata.componentName,
-        originalPosition: chunk.metadata.position,
-        normalizedPosition: position
-      });
-    }
     return {
       ...chunk.metadata,
-      position
+      position: chunk.metadata.position?.toLowerCase().trim() || 'main'
     };
   }
 
-  // Try to extract from content if no metadata
-  const startMatch = chunk.delta?.text?.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
-  if (startMatch) {
-    const position = normalizePosition(startMatch[2]);
-    const metadata = {
-      componentName: startMatch[1],
-      position,
-      componentId: startMatch[1] === 'RootLayout' ? 'root_layout' : `comp_${startMatch[1].toLowerCase()}`
-    };
-    
-    if (DEBUG_MODE) {
-      console.log('✅ Extracted metadata from content:', {
-        match: startMatch[0],
-        componentName: metadata.componentName,
-        originalPosition: startMatch[2],
-        normalizedPosition: position
-      });
+  const startMarkerText = chunk.delta?.text?.match(/\/\/\/\s*START\s+\w+(?:\s+position=\w+)?/)?.[0];
+  if (startMarkerText) {
+    const result = MarkerValidator.validateMarker(startMarkerText);
+    if (result.isValid) {
+      return {
+        componentName: result.name,
+        position: result.position,
+        componentId: result.name === 'RootLayout' ? 'root_layout' : `comp_${result.name.toLowerCase()}`
+      };
     }
-    
-    return metadata;
   }
 
-  // Fallback to existing metadata or generate temporary
-  const fallbackMetadata = {
+  return {
     componentName: 'UnknownComponent',
-    position: normalizePosition(existingMetadata?.position),
+    position: existingMetadata?.position?.toLowerCase().trim() || 'main',
     componentId: 'comp_unknown'
   };
+};
 
-  if (DEBUG_MODE) {
-    console.log('⚠️ Using fallback metadata:', fallbackMetadata);
+// Update BufferManager to use the new validator
+class BufferManager {
+  constructor() {
+    this.buffer = '';
+    this.lastProcessedIndex = 0;
   }
 
-  return fallbackMetadata;
+  append(text) {
+    this.buffer += text;
+  }
+
+  findNextMarker() {
+    const match = MarkerValidator.MARKER_PATTERN.exec(this.buffer.slice(this.lastProcessedIndex));
+    if (!match) return -1;
+    return match.index + this.lastProcessedIndex;
+  }
+
+  getContentUpTo(index) {
+    const content = this.buffer.slice(this.lastProcessedIndex, index);
+    this.lastProcessedIndex = index;
+    return content;
+  }
+
+  consumeProcessedContent() {
+    // Remove processed content and reset index
+    this.buffer = this.buffer.slice(this.lastProcessedIndex);
+    this.lastProcessedIndex = 0;
+  }
+
+  clear() {
+    this.buffer = '';
+    this.lastProcessedIndex = 0;
+  }
+
+  get length() {
+    return this.buffer.length;
+  }
+
+  get remainingContent() {
+    return this.buffer.slice(this.lastProcessedIndex);
+  }
+}
+
+// Simplify position handling to just pass through whatever the AI generates
+const normalizePosition = (position) => {
+  return position?.toLowerCase().trim() || 'main';
 };
+
+// Update sections tracking to be completely dynamic
+const sections = new Map([
+  ['header', new Set()],
+  ['main', new Set()],
+  ['footer', new Set()]
+]);
 
 // Helper function to check if we should accumulate more code for compound components
 const shouldAccumulateMore = (componentName, accumulatedCode, startTime) => {
@@ -359,6 +367,110 @@ const handleStreamError = (error, res, currentComponentId, currentComponentName,
     res.end();
   }
 };
+
+// Add carry-over buffer tracking
+const CARRY_OVER_MAX_SIZE = 1024; // 1KB max carry-over size
+
+const processComponent = (chunk, currentComponent) => {
+  // Extract marker information
+  const markerMatch = chunk.match(MARKER_PATTERN);
+  if (!markerMatch) return null;
+  
+  const [_, type, name, position] = markerMatch;
+  let cleanName = name.replace(/^H+/, '');
+  cleanName = COMPONENT_ALIASES[cleanName] || cleanName;
+  
+  // Create component ID using clean name
+  const componentId = `comp_${cleanName.toLowerCase()}`;
+  
+  // For START markers, initialize component tracking
+  if (type === 'START') {
+    return {
+      type: 'content_block_start',
+      metadata: {
+        componentName: cleanName,
+        position: position || 'main',
+        componentId
+      }
+    };
+  }
+  
+  // For END markers, validate and finalize component
+  if (type === 'END' && currentComponent) {
+    const cleanCurrentName = currentComponent.name.replace(/^H+/, '');
+    const aliasedCurrentName = COMPONENT_ALIASES[cleanCurrentName] || cleanCurrentName;
+    
+    if (cleanName === aliasedCurrentName) {
+      return {
+        type: 'content_block_stop',
+        metadata: {
+          componentId,
+          isComplete: true
+        }
+      };
+    }
+  }
+  
+  return null;
+};
+
+// Add new buffer management class with deduplication
+class ComponentBuffer {
+  constructor() {
+    this.components = new Map();
+    this.currentComponent = null;
+  }
+
+  startComponent(componentId, name, position) {
+    this.currentComponent = {
+      id: componentId,
+      name,
+      position,
+      buffer: '',
+      isComplete: false
+    };
+    this.components.set(componentId, this.currentComponent);
+  }
+
+  appendToComponent(componentId, content) {
+    const component = this.components.get(componentId);
+    if (component) {
+      // Only append if this isn't a duplicate function declaration
+      if (!this.isDuplicateDeclaration(component.buffer, content)) {
+        component.buffer += content;
+      }
+    }
+  }
+
+  isDuplicateDeclaration(existingBuffer, newContent) {
+    // Check if the new content starts with a function declaration we already have
+    const functionDeclaration = /(?:export\s+)?(?:function|const)\s+[A-Z][A-Za-z0-9]*\s*(?:\(|=)/;
+    if (functionDeclaration.test(newContent)) {
+      const match = newContent.match(functionDeclaration);
+      if (match && existingBuffer.includes(match[0])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  completeComponent(componentId) {
+    const component = this.components.get(componentId);
+    if (component) {
+      component.isComplete = true;
+      this.currentComponent = null;
+    }
+  }
+
+  getComponent(componentId) {
+    return this.components.get(componentId);
+  }
+
+  clear() {
+    this.components.clear();
+    this.currentComponent = null;
+  }
+}
 
 const generateController = async (req, res) => {
   try {
@@ -463,6 +575,12 @@ const generateController = async (req, res) => {
         }
       }
 
+      // Safely get section contents
+      const getSectionComponents = (sectionName) => {
+        const section = sections.get(sectionName);
+        return section ? Array.from(section) : [];
+      };
+
       return {
         componentId: state.id,
         componentName: state.name,
@@ -472,9 +590,9 @@ const generateController = async (req, res) => {
         isCompoundComplete,
         error: !isCompoundComplete && type === 'stop' ? 'INCOMPLETE_COMPOUND' : undefined,
         sections: type === 'stop' ? {
-          header: Array.from(sections.header),
-          main: Array.from(sections.main),
-          footer: Array.from(sections.footer)
+          header: getSectionComponents('header'),
+          main: getSectionComponents('main'),
+          footer: getSectionComponents('footer')
         } : undefined
       };
     };
@@ -484,7 +602,6 @@ const generateController = async (req, res) => {
     let currentComponentName = null;
     let accumulatedCode = '';
     let componentStartTime = null;
-    const sections = { header: new Set(), main: new Set(), footer: new Set() };
 
     // Helper function to start a component
     const startComponent = (name, position, componentId) => {
@@ -493,10 +610,11 @@ const generateController = async (req, res) => {
       currentComponentName = name;
       currentComponentId = componentId;
 
-      if (!VALID_POSITIONS.includes(position)) {
-        position = 'main';
+      // Add position to sections if it doesn't exist
+      if (!sections.has(position)) {
+        sections.set(position, new Set());
       }
-      sections[position].add(componentId);
+      sections.get(position).add(componentId);
 
       // Initialize component state
       updateComponentState(componentId, {
@@ -603,6 +721,10 @@ const generateController = async (req, res) => {
       componentStartTime = null;
     };
 
+    // Initialize both buffer managers
+    const bufferManager = new BufferManager();
+    const componentBuffer = new ComponentBuffer();
+
     // Handle stream events
     stream.on('data', (chunk) => {
       try {
@@ -612,127 +734,140 @@ const generateController = async (req, res) => {
           return;
         }
 
-        // Check for component timeout
-        if (currentComponentId && componentStartTime && 
-            (Date.now() - componentStartTime > MAX_COMPONENT_TIME)) {
-          console.warn(`⚠️ Component ${currentComponentName} timed out after ${MAX_COMPONENT_TIME}ms`);
-          stopComponent();
-        }
-
-        // Avoid huge memory usage
-        if (buffer.length > MAX_BUFFER_SIZE) {
-          console.warn('🚨 Buffer overflow - clearing');
-          if (currentComponentId) {
-            // Try to salvage current component before clearing
-            stopComponent();
-          }
-          buffer = '';
-          accumulatedCode = '';
-        }
-
         // Parse Anthropic's format
         const event = JSON.parse(chunk.toString());
+        console.log('📦 Processing chunk:', event.type, event);
 
-        if (event.type === 'content_block_delta' && event.delta?.text) {
-          // Accumulate text in buffer
-          buffer += event.delta.text;
-          console.log(`📝 Accumulated ${event.delta.text.length} bytes in buffer`);
-        }
-
-        // Skip processing if we detect an incomplete marker
-        if (INCOMPLETE_MARKER.test(buffer)) {
-          console.log('⏳ Detected incomplete marker, waiting for more data');
-          return;
-        }
-
-        // Keep searching for complete markers
-        let match;
-        while ((match = buffer.match(MARKER_PATTERN))) {
-          const markerFull = match[0];
-          const markerType = match[1];          // START or END
-          const markerName = match[2].trim();   // e.g. Header, RootLayout, etc.
-          const markerPosition = match[3] || ''; // e.g. header, main, etc.
-
-          // Instead of halting on an incomplete marker, we flush a partial update
-          if (!validateMarkers(markerType, markerName, currentComponentName, buffer, match.index)) {
-            console.warn('⚠️ Incomplete marker detected; emitting partial update.');
-            if (currentComponentId && accumulatedCode.trim()) {
-              res.write(`data: ${JSON.stringify({
-                type: 'content_block_delta',
-                metadata: createMetadata(currentComponentId, 'delta'),
-                delta: { text: accumulatedCode }
-              })}\n\n`);
-            }
-            // Remove the problematic marker from buffer and continue processing
-            const markerLength = markerFull.length;
-            buffer = buffer.slice(match.index + markerLength);
-            continue;
-          }
-
-          const matchIndex = match.index;
-          const codeBeforeMarker = buffer.slice(0, matchIndex);
-
-          // If we see a new START while still inside a component, emit current code and stop
-          if (currentComponentId && markerType === 'START') {
-            console.log(`⚠️ New component ${markerName} started while ${currentComponentName} is active - emitting current`);
-            accumulatedCode += codeBeforeMarker;
+        // Handle different event types
+        switch (event.type) {
+          case 'message_start':
+            console.log('🎬 Message started');
+            // Initialize stream state
+            currentComponentId = null;
+            currentComponentName = null;
+            bufferManager.clear();
+            componentBuffer.clear();
+            componentStartTime = null;
             
-            // Emit the accumulated code before stopping
+            // Send message_start event to client
             res.write(`data: ${JSON.stringify({
-              type: 'content_block_delta',
-              metadata: createMetadata(currentComponentId, 'delta'),
-              delta: { text: accumulatedCode }
+              type: 'message_start',
+              metadata: {
+                ...event.metadata,
+                streamStarted: true,
+                timestamp: Date.now()
+              }
             })}\n\n`);
-            
-            stopComponent();
-          }
 
-          if (currentComponentId) {
-            accumulatedCode += codeBeforeMarker;
-            
-            // Emit accumulated code as a delta update
-            if (accumulatedCode.trim()) {
-              res.write(`data: ${JSON.stringify({
-                type: 'content_block_delta',
-                metadata: createMetadata(currentComponentId, 'delta'),
-                delta: { text: accumulatedCode }
-              })}\n\n`);
-              accumulatedCode = ''; // Reset after emitting
+            // Ensure the stream stays alive
+            if (typeof res.flush === 'function') {
+              res.flush();
             }
-          }
+            break;
 
-          // Remove consumed portion from buffer
-          buffer = buffer.slice(matchIndex + markerFull.length);
+          case 'content_block_start':
+            console.log('📝 Content block started');
+            if (event.content_block?.text?.trim()) {
+              bufferManager.append(event.content_block.text);
+            }
+            break;
 
-          if (markerType === 'START') {
-            const componentId = getComponentId(markerName);
-            console.log(`🎯 Starting component ${markerName} with ID ${componentId}`);
-            startComponent(markerName, markerPosition, componentId);
-          } else if (markerType === 'END') {
-            if (markerName === currentComponentName) {
-              const componentDuration = Date.now() - componentStartTime;
-              console.log(`✅ Ending component ${markerName} after ${componentDuration}ms`);
-              
-              // Emit any remaining code before stopping
-              if (accumulatedCode.trim()) {
+          case 'content_block_delta':
+            if (event.delta?.text) {
+              console.log('✍️ Content delta received:', event.delta.text.slice(0, 50) + '...');
+              bufferManager.append(event.delta.text);
+
+              // Process markers
+              let markerIndex;
+              while ((markerIndex = bufferManager.findNextMarker()) !== -1) {
+                // Get content before marker
+                const contentBeforeMarker = bufferManager.getContentUpTo(markerIndex);
+                
+                // Emit content if we have an active component
+                if (currentComponentId && contentBeforeMarker.trim()) {
+                  // Use ComponentBuffer to prevent duplicates
+                  componentBuffer.appendToComponent(currentComponentId, contentBeforeMarker);
+                  const component = componentBuffer.getComponent(currentComponentId);
+                  
+                  res.write(`data: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    metadata: createMetadata(currentComponentId, 'delta'),
+                    delta: { text: contentBeforeMarker }
+                  })}\n\n`);
+                }
+
+                // Find the end of the marker line
+                const markerEndIndex = bufferManager.buffer.indexOf('\n', markerIndex);
+                if (markerEndIndex === -1) {
+                  break;
+                }
+
+                // Extract marker content
+                const markerContent = bufferManager.buffer.slice(markerIndex, markerEndIndex);
+                console.log('🏷️ Processing marker:', markerContent);
+
+                // Process START marker
+                if (markerContent.startsWith('/// START')) {
+                  if (currentComponentId) {
+                    componentBuffer.completeComponent(currentComponentId);
+                    stopComponent();
+                  }
+                  const match = markerContent.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
+                  if (match) {
+                    const [, name, position = 'main'] = match;
+                    const componentId = `comp_${name.toLowerCase()}`;
+                    componentBuffer.startComponent(componentId, name, position);
+                    startComponent(name, position, componentId);
+                  }
+                } 
+                // Process END marker
+                else if (markerContent.startsWith('/// END')) {
+                  const componentDuration = Date.now() - componentStartTime;
+                  componentBuffer.completeComponent(currentComponentId);
+                  stopComponent(componentDuration);
+                }
+
+                // Update buffer manager
+                bufferManager.lastProcessedIndex = markerEndIndex + 1;
+                bufferManager.consumeProcessedContent();
+              }
+
+              // If we have an active component, accumulate remaining content
+              if (currentComponentId && bufferManager.remainingContent.trim()) {
+                componentBuffer.appendToComponent(currentComponentId, bufferManager.remainingContent);
+                const component = componentBuffer.getComponent(currentComponentId);
+                
                 res.write(`data: ${JSON.stringify({
                   type: 'content_block_delta',
                   metadata: createMetadata(currentComponentId, 'delta'),
-                  delta: { text: accumulatedCode }
+                  delta: { text: bufferManager.remainingContent }
                 })}\n\n`);
               }
-              
-              stopComponent(componentDuration);
-            } else {
-              console.warn(`❌ END marker for ${markerName} but current is ${currentComponentName}`);
             }
-          }
-        }
+            break;
 
-        // If in a component, accumulate any leftover buffer
-        if (currentComponentId) {
-          accumulatedCode += buffer;
-          buffer = '';
+          case 'message_stop':
+            console.log('🏁 Message completed');
+            // Handle any remaining content
+            if (currentComponentId && bufferManager.buffer.trim()) {
+              const finalContent = bufferManager.buffer.slice(bufferManager.lastProcessedIndex);
+              if (finalContent.trim()) {
+                componentBuffer.appendToComponent(currentComponentId, finalContent);
+                const component = componentBuffer.getComponent(currentComponentId);
+                
+                res.write(`data: ${JSON.stringify({
+                  type: 'content_block_delta',
+                  metadata: createMetadata(currentComponentId, 'delta'),
+                  delta: { text: finalContent }
+                })}\n\n`);
+              }
+              componentBuffer.completeComponent(currentComponentId);
+              stopComponent();
+            }
+            break;
+
+          default:
+            console.log('⚠️ Unhandled event type:', event.type);
         }
 
         // Flush SSE to client
@@ -740,7 +875,7 @@ const generateController = async (req, res) => {
           res.flush();
         }
       } catch (error) {
-        handleStreamError(error, res, currentComponentId, currentComponentName, accumulatedCode, stopComponent);
+        handleStreamError(error, res, currentComponentId, currentComponentName, bufferManager.buffer, stopComponent);
         stream.destroy();
       }
     });
@@ -789,25 +924,43 @@ const generateController = async (req, res) => {
         duration: state.duration
       }));
 
+      // Safely get section contents
+      const getSectionComponents = (sectionName) => {
+        const section = sections.get(sectionName);
+        return section ? Array.from(section) : [];
+      };
+
+      // Calculate total components safely
+      const getTotalComponents = () => {
+        return ['header', 'main', 'footer'].reduce((total, sectionName) => {
+          const section = sections.get(sectionName);
+          return total + (section ? section.size : 0);
+        }, 0);
+      };
+
       // Send final completion signal with complete metadata
       res.write(`data: ${JSON.stringify({
         type: 'message_stop',
         metadata: {
           sections: {
-            header: Array.from(sections.header),
-            main: Array.from(sections.main),
-            footer: Array.from(sections.footer)
+            header: getSectionComponents('header'),
+            main: getSectionComponents('main'),
+            footer: getSectionComponents('footer')
           },
-          totalComponents: sections.header.size + sections.main.size + sections.footer.size,
+          totalComponents: getTotalComponents(),
           components: finalState
         }
       })}\n\n`);
+
       res.end();
+
+      // Clean up buffer manager
+      bufferManager.clear();
     });
 
     // Handle stream errors
     stream.on('error', (err) => {
-      handleStreamError(err, res, currentComponentId, currentComponentName, accumulatedCode, stopComponent);
+      handleStreamError(err, res, currentComponentId, currentComponentName, bufferManager.buffer, stopComponent);
     });
     
   } catch (error) {
@@ -824,4 +977,4 @@ const generateController = async (req, res) => {
   }
 };
 
-module.exports = generateController; 
+module.exports = generateController;
