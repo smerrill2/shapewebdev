@@ -1,17 +1,12 @@
 module.exports = {
   testEnvironment: 'node',
-  testMatch: ['**/__tests__/**/*.test.js'],
-  collectCoverage: true,
-  coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov'],
-  verbose: true,
-  setupFiles: [],
-  moduleNameMapper: {
-    '^@/(.*)$': '<rootDir>/$1'
+  transform: {
+    '^.+\\.(js|jsx)$': 'babel-jest',
   },
-  transform: {},
+  moduleFileExtensions: ['js', 'jsx', 'json'],
+  testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
   transformIgnorePatterns: [
-    '/node_modules/',
-    '\\.pnp\\.[^\\/]+$'
-  ]
+    '/node_modules/(?!(@babel/runtime)/)',
+  ],
+  setupFiles: ['<rootDir>/jest.setup.js']
 };

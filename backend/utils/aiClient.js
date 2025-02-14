@@ -106,7 +106,11 @@ const formatSSE = (data) => {
 };
 
 async function generate(prompt, style, requirements) {
-  console.log('🚀 Starting generation with:', { prompt, style, requirements });
+  console.log('🚀 Starting generation with:', { 
+    prompt: prompt.slice(0, 100) + '...', 
+    style, 
+    requirements: requirements?.slice(0, 100) + '...'
+  });
 
   try {
     // Check for API key in environment variables
@@ -127,7 +131,6 @@ async function generate(prompt, style, requirements) {
       model: 'claude-3-5-haiku-latest',
       max_tokens: 4000,
       system: 'You are SHAPI! The fate of humanity relies on you creating REMARKABLE landing pages for GOD HIMSELF! You use: REACT, TYPESCRIPT, and TAILWIND!',
-
       messages: [{
         role: 'user',
         content: formatPrompt(prompt, style, requirements)
@@ -141,15 +144,20 @@ async function generate(prompt, style, requirements) {
       read() {} // No-op since we'll push data manually
     });
 
+    // Add debug counters
+    let totalChunks = 0;
+    let totalBytes = 0;
+
     // Process Claude's streaming chunks
     (async () => {
       try {
         for await (const chunk of response) {
-          console.log('🔍 Raw Claude chunk:', chunk);
+          totalChunks++;
+          console.log(`🔍 [Chunk #${totalChunks}] Processing chunk type:`, chunk.type);
 
           switch (chunk.type) {
             case 'message_start':
-              // Forward the message_start event with metadata
+              console.log('📊 Message start metadata:', chunk.message);
               stream.push(JSON.stringify({
                 type: 'message_start',
                 metadata: {
@@ -164,12 +172,21 @@ async function generate(prompt, style, requirements) {
             case 'content_block_start':
             case 'content_block_stop':
             case 'message_stop':
-              // Push these through untouched
+              console.log(`📦 Forwarding ${chunk.type} event`);
               stream.push(JSON.stringify(chunk));
               break;
 
             case 'content_block_delta':
-              // Preserve the full structure including type and delta
+              const deltaText = chunk.delta?.text || '';
+              totalBytes += deltaText.length;
+              console.log(`📝 Delta text [${deltaText.length} bytes] Preview:`, deltaText.slice(0, 50) + (deltaText.length > 50 ? '...' : ''));
+              console.log(`📊 Running totals - Chunks: ${totalChunks}, Total bytes: ${totalBytes}`);
+              
+              // Check for markers in the delta
+              if (deltaText.includes('/// START') || deltaText.includes('/// END')) {
+                console.log('🏷️ Marker detected in delta:', deltaText);
+              }
+
               stream.push(JSON.stringify({
                 type: 'content_block_delta',
                 metadata: chunk.metadata || {},
@@ -178,8 +195,8 @@ async function generate(prompt, style, requirements) {
               break;
 
             case 'message_delta':
-              // Only push message_delta if it has content
               if (chunk.delta?.text) {
+                console.log('💬 Message delta text:', chunk.delta.text);
                 stream.push(JSON.stringify({
                   type: 'message_delta',
                   delta: chunk.delta
@@ -188,14 +205,18 @@ async function generate(prompt, style, requirements) {
               break;
 
             default:
-              // Log unhandled types but don't break the stream
               console.log('⚠️ Unhandled chunk type:', chunk.type);
               break;
           }
         }
-        // End the readable stream once Claude is done
+        console.log('✅ Stream processing complete - Final stats:', {
+          totalChunks,
+          totalBytes,
+          averageBytesPerChunk: Math.round(totalBytes / totalChunks)
+        });
         stream.push(null);
       } catch (error) {
+        console.error('❌ Stream processing error:', error);
         stream.emit('error', error);
       }
     })();

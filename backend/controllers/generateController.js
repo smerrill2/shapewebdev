@@ -9,12 +9,12 @@ const MAX_COMPOUND_WAIT_TIME = 10000; // 10s max wait for subcomponents
 const COMPOUND_COMPONENTS = {
   NavigationMenu: {
     subcomponentPatterns: {
-      List: /NavigationMenu\.List/,
-      Item: /NavigationMenu\.Item/,
-      Link: /NavigationMenu\.Link/,
-      Content: /NavigationMenu\.Content/,
-      Trigger: /NavigationMenu\.Trigger/,
-      Viewport: /NavigationMenu\.Viewport/
+      List: /NavigationMenuList/,
+      Item: /NavigationMenuItem/,
+      Link: /NavigationMenuLink/,
+      Content: /NavigationMenuContent/,
+      Trigger: /NavigationMenuTrigger/,
+      Viewport: /NavigationMenuViewport/
     }
   },
   Card: {
@@ -80,6 +80,359 @@ const COMPONENT_ALIASES = {
   'Nav': 'Header',
   'NavigationBar': 'Header',
   'Navbar': 'Header'
+};
+
+// Add new buffer management class with deduplication
+class ComponentBuffer {
+  constructor() {
+    this.components = new Map();
+  }
+
+  startComponent(id, name, position) {
+    // Don't start if already started
+    if (this.components.has(id)) {
+      return;
+    }
+
+    log(`🎬 [ComponentBuffer] Starting component:`, {
+      id,
+      name,
+      position,
+      timestamp: new Date().toISOString()
+    });
+
+    this.components.set(id, {
+      id,
+      name,
+      position,
+      code: '',
+      isStreaming: true,
+      isComplete: false,
+      isCompound: false,
+      startTime: Date.now(),
+      stats: {
+        appendCalls: 0,
+        totalBytes: 0,
+        markers: {
+          start: Date.now()
+        }
+      },
+      functionDeclarations: new Set()
+    });
+  }
+
+  appendToComponent(id, content) {
+    const component = this.components.get(id);
+    if (!component) return;
+
+    // Check for duplicate function declarations
+    if (content.includes('export function')) {
+      const functionMatches = content.match(/export\s+function\s+(\w+)/g);
+      if (functionMatches) {
+        // Extract function names from the new content
+        const newFunctions = functionMatches.map(match => match.replace('export function ', '').trim());
+        
+        // Check if any of these functions already exist in the component's code
+        const existingCode = component.code;
+        const existingFunctionMatches = existingCode.match(/export\s+function\s+(\w+)/g) || [];
+        const existingFunctions = existingFunctionMatches.map(match => match.replace('export function ', '').trim());
+        
+        // If any of the new functions already exist, skip this content block
+        if (newFunctions.some(fn => existingFunctions.includes(fn))) {
+          log(`⚠️ Skipping content block with duplicate function declaration(s): ${newFunctions.join(', ')}`);
+          return;
+        }
+        
+        // If no duplicates, add all new functions to the tracking set
+        newFunctions.forEach(fn => component.functionDeclarations.add(fn));
+      }
+    }
+
+    component.code += content;
+    component.stats.appendCalls++;
+    component.stats.totalBytes += content.length;
+    component.stats.lastAppendTime = Date.now();
+  }
+
+  completeComponent(id) {
+    const component = this.components.get(id);
+    if (!component) return;
+
+    component.isComplete = true;
+    component.isStreaming = false;
+
+    const duration = Date.now() - component.startTime;
+    log(`✨ [ComponentBuffer] Completing component ${component.name}:`, {
+      duration,
+      finalBufferSize: component.code.length,
+      totalAppendCalls: component.stats.appendCalls,
+      totalBytes: component.stats.totalBytes,
+      averageBytesPerAppend: component.stats.totalBytes / component.stats.appendCalls,
+      functionDeclarations: Array.from(component.functionDeclarations)
+    });
+  }
+
+  getComponent(id) {
+    return this.components.get(id);
+  }
+
+  clear() {
+    const stats = {
+      appendCalls: Array.from(this.components.values()).reduce((acc, comp) => acc + comp.stats.appendCalls, 0),
+      totalBytesAppended: Array.from(this.components.values()).reduce((acc, comp) => acc + comp.stats.totalBytes, 0),
+      duplicatesSkipped: Array.from(this.components.values()).reduce((acc, comp) => acc + comp.functionDeclarations.size, 0)
+    };
+
+    log(`🧹 [ComponentBuffer] Clearing buffer. Final stats:`, stats);
+    this.components.clear();
+  }
+}
+
+// Update BufferManager to use the new validator
+class BufferManager {
+  constructor() {
+    this.buffer = '';
+    this.lastProcessedIndex = 0;
+    this.markerPattern = /\/\/\/\s*(START|END)\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([\w]+))?\s*$/m;
+    this.currentContent = '';
+    this.inComponent = false;
+  }
+
+  append(text) {
+    this.buffer += text;
+    if (this.inComponent) {
+      this.currentContent += text;
+    }
+  }
+
+  findNextMarker() {
+    const match = this.markerPattern.exec(this.buffer.slice(this.lastProcessedIndex));
+    if (!match) return -1;
+    return match.index + this.lastProcessedIndex;
+  }
+
+  getContentUpTo(index) {
+    const content = this.buffer.slice(this.lastProcessedIndex, index);
+    this.lastProcessedIndex = index;
+    return content;
+  }
+
+  consumeProcessedContent() {
+    // Remove processed content and reset index
+    this.buffer = this.buffer.slice(this.lastProcessedIndex);
+    this.lastProcessedIndex = 0;
+  }
+
+  clear() {
+    this.buffer = '';
+    this.lastProcessedIndex = 0;
+    this.currentContent = '';
+    this.inComponent = false;
+  }
+
+  get length() {
+    return this.buffer.length;
+  }
+
+  get remainingContent() {
+    return this.buffer.slice(this.lastProcessedIndex);
+  }
+
+  hasUnprocessedContent() {
+    return this.remainingContent.trim().length > 0;
+  }
+
+  processMarkers(currentComponentId, componentBuffer, res, startComponent, stopComponent) {
+    let markerIndex;
+    let hasProcessedContent = false;
+
+    while ((markerIndex = this.findNextMarker()) !== -1) {
+      // Get content before marker
+      const contentBeforeMarker = this.getContentUpTo(markerIndex);
+      
+      // Emit content if we have an active component
+      if (currentComponentId && this.inComponent && contentBeforeMarker.trim()) {
+        componentBuffer.appendToComponent(currentComponentId, contentBeforeMarker);
+        hasProcessedContent = true;
+        
+        // Send delta event to client
+        res.write(`data: ${JSON.stringify({
+          type: 'content_block_delta',
+          metadata: {
+            componentId: currentComponentId,
+            componentName: componentBuffer.getComponent(currentComponentId)?.name,
+            position: componentBuffer.getComponent(currentComponentId)?.position || 'main',
+            isCompoundComplete: true,
+            isCritical: CRITICAL_COMPONENTS.has(componentBuffer.getComponent(currentComponentId)?.name)
+          },
+          delta: { text: contentBeforeMarker }
+        })}\n\n`);
+      }
+
+      // Find the end of the marker line
+      const markerEndIndex = this.buffer.indexOf('\n', markerIndex);
+      if (markerEndIndex === -1) {
+        break;
+      }
+
+      // Extract marker content
+      const markerContent = this.buffer.slice(markerIndex, markerEndIndex);
+      log('🏷️ Processing marker:', markerContent);
+
+      // Process START marker
+      if (markerContent.startsWith('/// START')) {
+        // Only process a start marker if we are not already inside a component
+        if (!this.inComponent) {
+          const match = markerContent.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
+          if (match) {
+            const [, name, position = 'main'] = match;
+            const componentId = `comp_${name.toLowerCase()}`;
+            // Start the new component only if it isn't already started
+            if (!componentBuffer.getComponent(componentId)) {
+              componentBuffer.startComponent(componentId, name, position);
+              startComponent(name, position, componentId, res);
+              this.inComponent = true;
+              this.currentContent = '';
+            }
+          }
+        } else {
+          // Log that a duplicate START marker was received
+          log('⚠️ Duplicate START marker ignored for component:', currentComponentId);
+        }
+      } 
+      // Process END marker
+      else if (markerContent.startsWith('/// END')) {
+        const match = markerContent.match(/\/\/\/\s*END\s+(\w+)/);
+        if (match && match[1] && this.inComponent) {
+          const [, name] = match;
+          const componentId = `comp_${name.toLowerCase()}`;
+          
+          // Only end the component if it matches the current one
+          if (componentId === currentComponentId) {
+            const componentDuration = Date.now() - componentStartTime;
+            
+            // Send final content delta if we have accumulated content
+            if (this.currentContent.trim()) {
+              res.write(`data: ${JSON.stringify({
+                type: 'content_block_delta',
+                metadata: {
+                  componentId: currentComponentId,
+                  componentName: componentBuffer.getComponent(currentComponentId)?.name,
+                  position: componentBuffer.getComponent(currentComponentId)?.position || 'main',
+                  isCompoundComplete: true,
+                  isCritical: CRITICAL_COMPONENTS.has(componentBuffer.getComponent(currentComponentId)?.name)
+                },
+                delta: { text: this.currentContent }
+              })}\n\n`);
+            }
+
+            componentBuffer.completeComponent(currentComponentId);
+            stopComponent(res, componentDuration);
+            this.currentContent = '';
+            this.inComponent = false;
+          }
+        }
+      }
+
+      // Update buffer manager
+      this.lastProcessedIndex = markerEndIndex + 1;
+      this.consumeProcessedContent();
+    }
+
+    // Handle any remaining content for the current component
+    if (currentComponentId && this.inComponent && this.remainingContent.trim()) {
+      componentBuffer.appendToComponent(currentComponentId, this.remainingContent);
+      
+      // Send delta event to client
+      res.write(`data: ${JSON.stringify({
+        type: 'content_block_delta',
+        metadata: {
+          componentId: currentComponentId,
+          componentName: componentBuffer.getComponent(currentComponentId)?.name,
+          position: componentBuffer.getComponent(currentComponentId)?.position || 'main',
+          isCompoundComplete: true,
+          isCritical: CRITICAL_COMPONENTS.has(componentBuffer.getComponent(currentComponentId)?.name)
+        },
+        delta: { text: this.remainingContent }
+      })}\n\n`);
+    }
+
+    return hasProcessedContent;
+  }
+}
+
+// Update logging function to be test-aware
+const log = (message, ...args) => {
+  if (process.env.NODE_ENV !== 'test') {
+    console.log(message, ...args);
+  }
+};
+
+// Global state management
+let componentStates = new Map();
+let currentComponentId = null;
+let currentComponentName = null;
+let lineBuffer = '';
+
+// Reset function to clear all state
+const resetState = () => {
+  componentStates.clear();
+  currentComponentId = null;
+  currentComponentName = null;
+  lineBuffer = '';
+};
+
+// Helper function to create metadata for events
+const createMetadata = (componentId, type) => {
+  // Check if this is a critical component
+  const isCritical = CRITICAL_COMPONENTS.has(currentComponentName);
+
+  // For compound components, check if all required subcomponents are present
+  let isCompoundComplete = true;
+  if (COMPOUND_COMPONENTS[currentComponentName]) {
+    const requiredSubcomponents = COMPOUND_COMPONENTS[currentComponentName].subcomponentPatterns;
+    const actualCode = accumulatedCode;
+    
+    for (const [name, pattern] of Object.entries(requiredSubcomponents)) {
+      if (!pattern.test(actualCode)) {
+        isCompoundComplete = false;
+        if (DEBUG_MODE) {
+          console.warn(`⚠️ Missing required subcomponent ${name} for ${currentComponentName}`);
+        }
+        break;
+      }
+    }
+  }
+
+  // Safely get section contents
+  const getSectionComponents = (sectionName) => {
+    const section = sections.get(sectionName);
+    return section ? Array.from(section) : [];
+  };
+
+  return {
+    componentId,
+    componentName: currentComponentName,
+    position: sections.get('header')?.has(componentId) ? 'header' :
+             sections.get('footer')?.has(componentId) ? 'footer' : 'main',
+    isComplete: type === 'stop' ? true : undefined,
+    isCritical,
+    isCompoundComplete,
+    error: !isCompoundComplete && type === 'stop' ? 'INCOMPLETE_COMPOUND' : undefined,
+    sections: type === 'stop' ? {
+      header: getSectionComponents('header'),
+      main: getSectionComponents('main'),
+      footer: getSectionComponents('footer')
+    } : undefined
+  };
+};
+
+// Helper function to update component state
+const updateComponentState = (name, id) => {
+  currentComponentName = name;
+  currentComponentId = id;
+  accumulatedCode = '';
+  componentStartTime = Date.now();
 };
 
 /**
@@ -225,60 +578,10 @@ const getComponentMetadata = (chunk, existingMetadata = null) => {
   };
 };
 
-// Update BufferManager to use the new validator
-class BufferManager {
-  constructor() {
-    this.buffer = '';
-    this.lastProcessedIndex = 0;
-  }
-
-  append(text) {
-    this.buffer += text;
-  }
-
-  findNextMarker() {
-    const match = MarkerValidator.MARKER_PATTERN.exec(this.buffer.slice(this.lastProcessedIndex));
-    if (!match) return -1;
-    return match.index + this.lastProcessedIndex;
-  }
-
-  getContentUpTo(index) {
-    const content = this.buffer.slice(this.lastProcessedIndex, index);
-    this.lastProcessedIndex = index;
-    return content;
-  }
-
-  consumeProcessedContent() {
-    // Remove processed content and reset index
-    this.buffer = this.buffer.slice(this.lastProcessedIndex);
-    this.lastProcessedIndex = 0;
-  }
-
-  clear() {
-    this.buffer = '';
-    this.lastProcessedIndex = 0;
-  }
-
-  get length() {
-    return this.buffer.length;
-  }
-
-  get remainingContent() {
-    return this.buffer.slice(this.lastProcessedIndex);
-  }
-}
-
 // Simplify position handling to just pass through whatever the AI generates
 const normalizePosition = (position) => {
   return position?.toLowerCase().trim() || 'main';
 };
-
-// Update sections tracking to be completely dynamic
-const sections = new Map([
-  ['header', new Set()],
-  ['main', new Set()],
-  ['footer', new Set()]
-]);
 
 // Helper function to check if we should accumulate more code for compound components
 const shouldAccumulateMore = (componentName, accumulatedCode, startTime) => {
@@ -414,63 +717,382 @@ const processComponent = (chunk, currentComponent) => {
   return null;
 };
 
-// Add new buffer management class with deduplication
-class ComponentBuffer {
-  constructor() {
-    this.components = new Map();
-    this.currentComponent = null;
+// Update the startComponent function
+const startComponent = (name, position, componentId, res) => {
+  // Don't start if already started
+  if (currentComponentId === componentId) {
+    return;
   }
 
-  startComponent(componentId, name, position) {
-    this.currentComponent = {
-      id: componentId,
-      name,
+  log('🎬 Starting component:', {
+    name,
+    position,
+    componentId,
+    timestamp: new Date().toISOString(),
+    existingComponents: Array.from(componentBuffer.components.keys())
+  });
+
+  currentComponentId = componentId;
+  currentComponentName = name;
+  componentStartTime = Date.now();
+  accumulatedCode = '';
+
+  // Send start event to client
+  res.write(`data: ${JSON.stringify({
+    type: 'content_block_start',
+    metadata: {
+      componentId,
+      componentName: name,
       position,
-      buffer: '',
-      isComplete: false
-    };
-    this.components.set(componentId, this.currentComponent);
+      isCritical: CRITICAL_COMPONENTS.has(name),
+      isCompoundComplete: true
+    }
+  })}\n\n`);
+};
+
+// Update the stopComponent function
+const stopComponent = (res, componentDuration = 0) => {
+  if (!currentComponentId) return;
+
+  const component = componentBuffer.getComponent(currentComponentId);
+  const code = component?.code || '';
+  const trimmedCode = code.trim();
+
+  const finalStats = {
+    componentName: currentComponentName,
+    codeLength: code.length,
+    duration: componentDuration,
+    trimmedCodeLength: trimmedCode.length
+  };
+
+  log(`✅ Completing component:`, finalStats);
+
+  // Check for empty component - only if there's no code between markers
+  if (!trimmedCode || trimmedCode.length === 0) {
+    log(`⚠️ Empty component detected: ${currentComponentName}`);
+
+    // Send error event for empty component
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      code: 'VALIDATION_FAILED',
+      message: `Component ${currentComponentName} is empty`,
+      metadata: {
+        componentId: currentComponentId,
+        componentName: currentComponentName
+      }
+    })}\n\n`);
   }
 
-  appendToComponent(componentId, content) {
-    const component = this.components.get(componentId);
-    if (component) {
-      // Only append if this isn't a duplicate function declaration
-      if (!this.isDuplicateDeclaration(component.buffer, content)) {
-        component.buffer += content;
+  // Send stop event to client
+  res.write(`data: ${JSON.stringify({
+    type: 'content_block_stop',
+    metadata: {
+      componentId: currentComponentId,
+      componentName: currentComponentName,
+      position: component?.position || 'main',
+      isComplete: true,
+      isCompoundComplete: true,
+      isCritical: CRITICAL_COMPONENTS.has(currentComponentName),
+      sections: {
+        header: [],
+        main: [],
+        footer: []
       }
     }
-  }
+  })}\n\n`);
 
-  isDuplicateDeclaration(existingBuffer, newContent) {
-    // Check if the new content starts with a function declaration we already have
-    const functionDeclaration = /(?:export\s+)?(?:function|const)\s+[A-Z][A-Za-z0-9]*\s*(?:\(|=)/;
-    if (functionDeclaration.test(newContent)) {
-      const match = newContent.match(functionDeclaration);
-      if (match && existingBuffer.includes(match[0])) {
-        return true;
+  // Reset state
+  currentComponentId = null;
+  currentComponentName = null;
+  componentStartTime = null;
+  accumulatedCode = '';
+};
+
+// Enhanced marker processing helper
+const processMarkerText = (text) => {
+  try {
+    // Look for START or END markers with more detailed validation
+    const startMatch = text.match(/\/\/\/\s*START\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=(\w+))?/);
+    const endMatch = text.match(/\/\/\/\s*END\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)/);
+    const incompleteMarker = text.match(/\/\/\/\s*(?:START|END)\s*$/);
+
+    // If we find an incomplete marker, return null to buffer it
+    if (incompleteMarker) {
+      log('⚠️ Found incomplete marker, buffering:', text);
+      return { incomplete: true };
+    }
+
+    if (startMatch) {
+      const [, componentName, position = 'main'] = startMatch;
+      if (!componentName) {
+        log('⚠️ Invalid START marker - missing component name:', text);
+        return null;
       }
+      return {
+        type: 'content_block_start',
+        metadata: {
+          componentId: `comp_${componentName.toLowerCase()}`,
+          componentName,
+          position: position.toLowerCase(),
+          isCompoundComplete: true,
+          isCritical: CRITICAL_COMPONENTS.has(componentName)
+        }
+      };
     }
-    return false;
-  }
 
-  completeComponent(componentId) {
-    const component = this.components.get(componentId);
-    if (component) {
-      component.isComplete = true;
-      this.currentComponent = null;
+    if (endMatch) {
+      const [, componentName] = endMatch;
+      if (!componentName) {
+        log('⚠️ Invalid END marker - missing component name:', text);
+        return null;
+      }
+      return {
+        type: 'content_block_stop',
+        metadata: {
+          componentId: `comp_${componentName.toLowerCase()}`,
+          componentName,
+          isComplete: true,
+          isCompoundComplete: true,
+          isCritical: CRITICAL_COMPONENTS.has(componentName)
+        }
+      };
+    }
+
+    return null;
+  } catch (error) {
+    log('❌ Error processing marker:', error);
+    return null;
+  }
+};
+
+// Add helper to create finished event with enhanced metadata
+const createFinishedEvent = (componentId, componentName, state, reason = 'normal') => {
+  const now = Date.now();
+  const duration = state.startTime ? now - state.startTime : 0;
+  
+  // Clean and validate the code
+  const cleanedCode = cleanComponentCode(state.code || '');
+  const codeSize = cleanedCode.length;
+  const linesOfCode = cleanedCode.split('\n').length;
+  
+  // Validate compound components
+  const { isValid: isCompoundValid, missingSubcomponents } = validateCompoundComponent(componentName, cleanedCode);
+  
+  // Log completion details
+  log('✨ Component finished:', {
+    componentId,
+    componentName,
+    reason,
+    duration: `${duration}ms`,
+    codeSize: `${codeSize} bytes`,
+    linesOfCode,
+    position: state.position || 'main',
+    timestamp: new Date(now).toISOString(),
+    isCompoundValid,
+    missingSubcomponents: missingSubcomponents.length ? missingSubcomponents : undefined
+  });
+
+  return {
+    type: 'component_finished',
+    metadata: {
+      componentId,
+      componentName,
+      isComplete: true,
+      isCompoundComplete: isCompoundValid,
+      isCritical: CRITICAL_COMPONENTS.has(componentName),
+      position: state.position || 'main',
+      timestamp: now,
+      duration,
+      reason,
+      revision: state.revision || 1,
+      stats: {
+        codeSize,
+        linesOfCode,
+        lastModified: state.lastUpdated,
+        missingSubcomponents: missingSubcomponents.length ? missingSubcomponents : undefined
+      }
+    },
+    code: cleanedCode
+  };
+};
+
+// Add helper to process multiple markers in a chunk
+const processChunkWithMarkers = (text, currentState) => {
+  const events = [];
+  const lines = text.split('\n');
+  const nonMarkerLines = [];
+  let currentContent = '';
+  
+  for (let line of lines) {
+    // If we have buffered content, prepend it to the current line
+    if (lineBuffer) {
+      line = lineBuffer + line;
+      lineBuffer = '';
+    }
+
+    const markerInfo = processMarkerText(line);
+
+    if (markerInfo?.incomplete) {
+      // Store incomplete line in buffer
+      lineBuffer = line;
+      continue;
+    }
+
+    if (markerInfo) {
+      // If we have accumulated content before this marker, add it to the current component
+      if (currentContent.trim() && currentState.currentComponentId) {
+        const state = componentStates.get(currentState.currentComponentId);
+        if (state) {
+          state.code = (state.code || '') + currentContent;
+          state.lastUpdated = Date.now();
+          componentStates.set(currentState.currentComponentId, state);
+        }
+      }
+      currentContent = '';
+
+      // Found a valid marker
+      events.push(markerInfo);
+
+      // Validate state consistency for markers
+      if (markerInfo.type === 'content_block_start') {
+        if (currentState.currentComponentId) {
+          log('⚠️ Found START marker while component is active:', {
+            current: currentState.currentComponentId,
+            new: markerInfo.metadata.componentId
+          });
+          
+          // Force stop the current component
+          const forcedState = componentStates.get(currentState.currentComponentId);
+          if (forcedState) {
+            // Send stop event first
+            events.push({
+              type: 'content_block_stop',
+              metadata: {
+                componentId: currentState.currentComponentId,
+                componentName: currentState.currentComponentName,
+                isComplete: true,
+                isCompoundComplete: true,
+                isCritical: CRITICAL_COMPONENTS.has(currentState.currentComponentName)
+              }
+            });
+            
+            // Then send the finished event with complete code
+            events.push(createFinishedEvent(
+              currentState.currentComponentId,
+              currentState.currentComponentName,
+              forcedState,
+              'forced_by_new_component'
+            ));
+          }
+        }
+        currentState.currentComponentId = markerInfo.metadata.componentId;
+        currentState.currentComponentName = markerInfo.metadata.componentName;
+      } else if (markerInfo.type === 'content_block_stop') {
+        const { componentId, componentName } = markerInfo.metadata;
+        if (componentId !== currentState.currentComponentId) {
+          log('⚠️ Mismatched END marker:', {
+            expected: currentState.currentComponentId,
+            received: componentId
+          });
+        }
+        
+        // Get the final state of the component
+        const finishedState = componentStates.get(componentId);
+        if (finishedState) {
+          // Add component_finished event with complete code
+          events.push(createFinishedEvent(componentId, componentName, finishedState));
+        }
+        
+        currentState.currentComponentId = null;
+        currentState.currentComponentName = null;
+      }
+    } else if (!line.trim().startsWith('///')) {
+      // Accumulate non-marker lines
+      currentContent += line + '\n';
+      nonMarkerLines.push(line);
     }
   }
 
-  getComponent(componentId) {
-    return this.components.get(componentId);
+  // If we have remaining content and an active component, add it to state
+  if (currentContent.trim() && currentState.currentComponentId) {
+    const state = componentStates.get(currentState.currentComponentId);
+    if (state) {
+      state.code = (state.code || '') + currentContent;
+      state.lastUpdated = Date.now();
+      componentStates.set(currentState.currentComponentId, state);
+    }
   }
 
-  clear() {
-    this.components.clear();
-    this.currentComponent = null;
+  return {
+    events,
+    remainingContent: nonMarkerLines.join('\n'),
+    currentState
+  };
+};
+
+// Helper function to clean and validate component code
+const cleanComponentCode = (code) => {
+  if (!code || typeof code !== 'string') {
+    return '';
   }
-}
+
+  try {
+    // Remove any trailing markers that might have been included
+    const lines = code.split('\n');
+    const cleanedLines = lines.filter(line => !line.trim().startsWith('///'));
+
+    // Clean up empty lines at start and end
+    let startIndex = 0;
+    let endIndex = cleanedLines.length - 1;
+
+    while (startIndex < cleanedLines.length && !cleanedLines[startIndex].trim()) {
+      startIndex++;
+    }
+
+    while (endIndex >= 0 && !cleanedLines[endIndex].trim()) {
+      endIndex--;
+    }
+
+    // Extract the actual component code
+    const componentLines = cleanedLines.slice(startIndex, endIndex + 1);
+
+    // Ensure we have actual code content
+    if (componentLines.length === 0) {
+      return '';
+    }
+
+    // Join lines and ensure proper spacing
+    const cleanedCode = componentLines.join('\n').trim();
+
+    // Basic validation
+    if (!cleanedCode.includes('export') || !cleanedCode.includes('function')) {
+      log('⚠️ Cleaned code missing export or function declaration');
+      return '';
+    }
+
+    return cleanedCode;
+  } catch (error) {
+    log('❌ Error cleaning component code:', error);
+    return '';
+  }
+};
+
+// Add validation for compound components
+const validateCompoundComponent = (componentName, code) => {
+  const compoundDef = COMPOUND_COMPONENTS[componentName];
+  if (!compoundDef) {
+    return { isValid: true, missingSubcomponents: [] };
+  }
+
+  const missingSubcomponents = Object.entries(compoundDef.subcomponentPatterns)
+    .filter(([name, pattern]) => !pattern.test(code))
+    .map(([name]) => name);
+
+  return {
+    isValid: missingSubcomponents.length === 0,
+    missingSubcomponents
+  };
+};
 
 const generateController = async (req, res) => {
   try {
@@ -489,7 +1111,7 @@ const generateController = async (req, res) => {
 
     // Allow test IDs to bypass database validation
     if (!isTestId(projectId) || !isTestId(versionId)) {
-      console.log('⚠️ Non-test IDs would be validated against database');
+      log('⚠️ Non-test IDs would be validated against database');
     }
 
     // Set SSE headers
@@ -500,14 +1122,14 @@ const generateController = async (req, res) => {
     if (typeof res.flushHeaders === 'function') {
       res.flushHeaders();
     }
-    console.log('📡 SSE headers set');
+    log('📡 SSE headers set');
 
     const { prompt, style, requirements } = req.body;
     const stream = await generate(prompt, style, requirements);
 
     // Handle client disconnect
     req.on('close', () => {
-      console.log('❌ Client disconnected');
+      log('❌ Client disconnected');
       stream.destroy();
       if (!res.writableEnded) {
         res.end();
@@ -516,6 +1138,8 @@ const generateController = async (req, res) => {
 
     // Component state management
     const componentStates = new Map();
+    let currentComponentId = null;
+    let currentComponentName = null;
     
     const updateComponentState = (id, updates) => {
       const current = componentStates.get(id) || {};
@@ -524,453 +1148,173 @@ const generateController = async (req, res) => {
         ...updates,
         lastUpdated: Date.now()
       };
-
-      // Handle compound component relationships
-      if (updates.name) {
-        // Check if this is a subcomponent
-        for (const [parent, children] of Object.entries(COMPOUND_COMPONENTS)) {
-          if (Array.isArray(children) && children.includes(updates.name)) {
-            const parentId = getComponentId(parent);
-            updated.parentId = parentId;
-            
-            // Update parent's children list
-            const parentState = componentStates.get(parentId) || {};
-            if (!parentState.children) parentState.children = new Set();
-            parentState.children.add(id);
-            componentStates.set(parentId, parentState);
-
-            if (DEBUG_MODE) {
-              console.log(`🔗 Linked subcomponent ${updates.name} to parent ${parent}`);
-            }
-            break;
-          }
-        }
-      }
-
       componentStates.set(id, updated);
       return updated;
     };
 
-    const createMetadata = (componentId, type) => {
-      const state = componentStates.get(componentId);
-      if (!state) return null;
-
-      // Check if this is a critical component
-      const isCritical = CRITICAL_COMPONENTS.has(state.name);
-
-      // For compound components, check if all required subcomponents are present
-      let isCompoundComplete = true;
-      if (COMPOUND_COMPONENTS[state.name]) {
-        const requiredSubcomponents = new Set(COMPOUND_COMPONENTS[state.name].subcomponents);
-        const actualSubcomponents = state.children ? Array.from(state.children).map(id => componentStates.get(id)?.name) : [];
-        
-        for (const required of requiredSubcomponents) {
-          if (!actualSubcomponents.includes(required)) {
-            isCompoundComplete = false;
-            if (DEBUG_MODE) {
-              console.warn(`⚠️ Missing required subcomponent ${required} for ${state.name}`);
-            }
-            break;
-          }
-        }
-      }
-
-      // Safely get section contents
-      const getSectionComponents = (sectionName) => {
-        const section = sections.get(sectionName);
-        return section ? Array.from(section) : [];
-      };
-
-      return {
-        componentId: state.id,
-        componentName: state.name,
-        position: state.position,
-        isComplete: type === 'stop' ? true : undefined,
-        isCritical,
-        isCompoundComplete,
-        error: !isCompoundComplete && type === 'stop' ? 'INCOMPLETE_COMPOUND' : undefined,
-        sections: type === 'stop' ? {
-          header: getSectionComponents('header'),
-          main: getSectionComponents('main'),
-          footer: getSectionComponents('footer')
-        } : undefined
-      };
+    // Function to check for duplicate function declarations
+    const hasDuplicateFunction = (code, functionName) => {
+      const regex = new RegExp(`export\\s+function\\s+${functionName}\\s*\\(`, 'g');
+      const matches = code.match(regex) || [];
+      return matches.length > 1;
     };
-
-    let buffer = '';
-    let currentComponentId = null;
-    let currentComponentName = null;
-    let accumulatedCode = '';
-    let componentStartTime = null;
-
-    // Helper function to start a component
-    const startComponent = (name, position, componentId) => {
-      console.log(`🎬 Starting component ${name} in position ${position}`);
-      componentStartTime = Date.now();
-      currentComponentName = name;
-      currentComponentId = componentId;
-
-      // Add position to sections if it doesn't exist
-      if (!sections.has(position)) {
-        sections.set(position, new Set());
-      }
-      sections.get(position).add(componentId);
-
-      // Initialize component state
-      updateComponentState(componentId, {
-        id: componentId,
-        name: name,
-        position: position,
-        isStreaming: true,
-        isComplete: false,
-        code: '',
-        startTime: Date.now(),
-        isCompound: !!COMPOUND_COMPONENTS[name]
-      });
-
-      // Notify frontend of new component
-      res.write(`data: ${JSON.stringify({
-        type: 'content_block_start',
-        metadata: createMetadata(componentId, 'start')
-      })}\n\n`);
-
-      if (typeof res.flush === 'function') {
-        res.flush();
-      }
-    };
-
-    // Helper function to finalize a component
-    const stopComponent = (componentDuration) => {
-      if (!currentComponentId) return;
-
-      console.log(`✅ Completing component ${currentComponentName} with ${accumulatedCode.length} bytes`);
-      
-      if (!accumulatedCode.trim()) {
-        console.log(`⚠️ No code accumulated for ${currentComponentName}, skipping.`);
-      } else {
-        // For compound components, ensure we have all subcomponents before stopping
-        if (COMPOUND_COMPONENTS[currentComponentName]) {
-          const shouldWait = shouldAccumulateMore(currentComponentName, accumulatedCode, componentStartTime);
-          
-          if (shouldWait) {
-            if (DEBUG_MODE) {
-              console.log(`🔄 Waiting for more subcomponents for ${currentComponentName}`);
-            }
-            return; // Don't stop yet, wait for more code
-          } else if (Date.now() - componentStartTime > MAX_COMPOUND_WAIT_TIME) {
-            // If we've exceeded wait time, mark as error
-            updateComponentState(currentComponentId, {
-              isStreaming: false,
-              isComplete: false,
-              error: 'COMPOUND_TIMEOUT',
-              code: accumulatedCode
-            });
-
-            res.write(`data: ${JSON.stringify({
-              type: 'error',
-              code: 'COMPOUND_TIMEOUT',
-              message: `Component ${currentComponentName} timed out waiting for subcomponents`,
-              metadata: createMetadata(currentComponentId, 'error')
-            })}\n\n`);
-
-            // Reset state and return
-            currentComponentId = null;
-            currentComponentName = null;
-            accumulatedCode = '';
-            componentStartTime = null;
-            return;
-          }
-        }
-
-        if (validateComponent(accumulatedCode, currentComponentName)) {
-          // Update component state
-          updateComponentState(currentComponentId, {
-            isStreaming: false,
-            isComplete: true,
-            code: accumulatedCode,
-            duration: componentDuration || Date.now() - componentStartTime
-          });
-
-          // Send accumulated code
-          res.write(`data: ${JSON.stringify({
-            type: 'content_block_delta',
-            metadata: createMetadata(currentComponentId, 'delta'),
-            delta: { text: accumulatedCode }
-          })}\n\n`);
-
-          // Mark as complete
-          res.write(`data: ${JSON.stringify({
-            type: 'content_block_stop',
-            metadata: createMetadata(currentComponentId, 'stop')
-          })}\n\n`);
-        } else {
-          console.warn(`❌ Invalid component code for ${currentComponentName}`);
-          // Update state to reflect validation failure
-          updateComponentState(currentComponentId, {
-            isStreaming: false,
-            isComplete: false,
-            error: 'VALIDATION_FAILED'
-          });
-        }
-      }
-      
-      // Reset state
-      currentComponentId = null;
-      currentComponentName = null;
-      accumulatedCode = '';
-      componentStartTime = null;
-    };
-
-    // Initialize both buffer managers
-    const bufferManager = new BufferManager();
-    const componentBuffer = new ComponentBuffer();
 
     // Handle stream events
     stream.on('data', (chunk) => {
       try {
         if (!res.writable) {
-          console.log('❌ Response no longer writable');
+          log('❌ Response no longer writable');
           stream.destroy();
           return;
         }
 
-        // Parse Anthropic's format
-        const event = JSON.parse(chunk.toString());
-        console.log('📦 Processing chunk:', event.type, event);
-
-        // Handle different event types
-        switch (event.type) {
-          case 'message_start':
-            console.log('🎬 Message started');
-            // Initialize stream state
-            currentComponentId = null;
-            currentComponentName = null;
-            bufferManager.clear();
-            componentBuffer.clear();
-            componentStartTime = null;
+        const data = chunk.toString();
+        
+        try {
+          const event = JSON.parse(data);
+          
+          // Process markers in the text content if this is a delta event
+          if (event.type === 'content_block_delta' && event.delta?.text) {
+            const { events, remainingContent, currentState } = processChunkWithMarkers(
+              event.delta.text,
+              { currentComponentId, currentComponentName }
+            );
             
-            // Send message_start event to client
-            res.write(`data: ${JSON.stringify({
-              type: 'message_start',
-              metadata: {
-                ...event.metadata,
-                streamStarted: true,
-                timestamp: Date.now()
+            // Update component state from processing results
+            currentComponentId = currentState.currentComponentId;
+            currentComponentName = currentState.currentComponentName;
+
+            // Send all marker and finished component events first
+            for (const markerEvent of events) {
+              // Ensure we're sending the complete code with finished events
+              if (markerEvent.type === 'component_finished') {
+                // Double check the code is clean and complete
+                const state = componentStates.get(markerEvent.metadata.componentId);
+                if (state) {
+                  markerEvent.code = cleanComponentCode(state.code || '');
+                }
               }
-            })}\n\n`);
-
-            // Ensure the stream stays alive
-            if (typeof res.flush === 'function') {
-              res.flush();
-            }
-            break;
-
-          case 'content_block_start':
-            console.log('📝 Content block started');
-            if (event.content_block?.text?.trim()) {
-              bufferManager.append(event.content_block.text);
-            }
-            break;
-
-          case 'content_block_delta':
-            if (event.delta?.text) {
-              console.log('✍️ Content delta received:', event.delta.text.slice(0, 50) + '...');
-              bufferManager.append(event.delta.text);
-
-              // Process markers
-              let markerIndex;
-              while ((markerIndex = bufferManager.findNextMarker()) !== -1) {
-                // Get content before marker
-                const contentBeforeMarker = bufferManager.getContentUpTo(markerIndex);
-                
-                // Emit content if we have an active component
-                if (currentComponentId && contentBeforeMarker.trim()) {
-                  // Use ComponentBuffer to prevent duplicates
-                  componentBuffer.appendToComponent(currentComponentId, contentBeforeMarker);
-                  const component = componentBuffer.getComponent(currentComponentId);
-                  
-                  res.write(`data: ${JSON.stringify({
-                    type: 'content_block_delta',
-                    metadata: createMetadata(currentComponentId, 'delta'),
-                    delta: { text: contentBeforeMarker }
-                  })}\n\n`);
+              
+              // Send the event immediately
+              res.write(`data: ${JSON.stringify(markerEvent)}\n\n`);
+              
+              // Update component states based on marker events
+              if (markerEvent.type === 'content_block_start') {
+                const { componentId, componentName, position } = markerEvent.metadata;
+                updateComponentState(componentId, {
+                  name: componentName,
+                  position,
+                  isStreaming: true,
+                  isComplete: false,
+                  code: '',
+                  startTime: Date.now(),
+                  revision: 1
+                });
+              } else if (markerEvent.type === 'content_block_stop') {
+                const { componentId } = markerEvent.metadata;
+                const state = componentStates.get(componentId);
+                if (state) {
+                  state.isStreaming = false;
+                  state.isComplete = true;
+                  state.lastUpdated = Date.now();
+                  componentStates.set(componentId, state);
                 }
+              }
+            }
 
-                // Find the end of the marker line
-                const markerEndIndex = bufferManager.buffer.indexOf('\n', markerIndex);
-                if (markerEndIndex === -1) {
-                  break;
-                }
-
-                // Extract marker content
-                const markerContent = bufferManager.buffer.slice(markerIndex, markerEndIndex);
-                console.log('🏷️ Processing marker:', markerContent);
-
-                // Process START marker
-                if (markerContent.startsWith('/// START')) {
-                  if (currentComponentId) {
-                    componentBuffer.completeComponent(currentComponentId);
-                    stopComponent();
+            // Only send content event if we have remaining content and a current component
+            if (remainingContent.trim() && currentComponentId) {
+              const cleanedContent = cleanComponentCode(remainingContent);
+              if (cleanedContent) {
+                const contentEvent = {
+                  ...event,
+                  delta: { text: cleanedContent },
+                  metadata: {
+                    componentId: currentComponentId,
+                    componentName: currentComponentName,
+                    isCompoundComplete: true,
+                    isCritical: CRITICAL_COMPONENTS.has(currentComponentName)
                   }
-                  const match = markerContent.match(/\/\/\/\s*START\s+(\w+)(?:\s+position=(\w+))?/);
-                  if (match) {
-                    const [, name, position = 'main'] = match;
-                    const componentId = `comp_${name.toLowerCase()}`;
-                    componentBuffer.startComponent(componentId, name, position);
-                    startComponent(name, position, componentId);
+                };
+                res.write(`data: ${JSON.stringify(contentEvent)}\n\n`);
+              }
+            }
+          } else {
+            // For non-delta events, forward as is
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          }
+
+          // Process other event types
+          switch (event.type) {
+            case 'message_start':
+              log('🎬 Message started');
+              // Reset state at the start of a new message
+              lineBuffer = '';
+              currentComponentId = null;
+              currentComponentName = null;
+              componentStates.clear();
+              break;
+
+            case 'message_stop':
+              log('🏁 Message complete');
+              // Handle any buffered content
+              if (lineBuffer) {
+                log('⚠️ Unprocessed content in buffer at message end:', lineBuffer);
+                // Try to process any complete lines from buffer
+                if (currentComponentId) {
+                  const state = componentStates.get(currentComponentId);
+                  if (state && !lineBuffer.trim().startsWith('///')) {
+                    state.code = (state.code || '') + lineBuffer;
+                    state.lastUpdated = Date.now();
+                    componentStates.set(currentComponentId, state);
                   }
-                } 
-                // Process END marker
-                else if (markerContent.startsWith('/// END')) {
-                  const componentDuration = Date.now() - componentStartTime;
-                  componentBuffer.completeComponent(currentComponentId);
-                  stopComponent(componentDuration);
                 }
-
-                // Update buffer manager
-                bufferManager.lastProcessedIndex = markerEndIndex + 1;
-                bufferManager.consumeProcessedContent();
               }
-
-              // If we have an active component, accumulate remaining content
-              if (currentComponentId && bufferManager.remainingContent.trim()) {
-                componentBuffer.appendToComponent(currentComponentId, bufferManager.remainingContent);
-                const component = componentBuffer.getComponent(currentComponentId);
-                
-                res.write(`data: ${JSON.stringify({
-                  type: 'content_block_delta',
-                  metadata: createMetadata(currentComponentId, 'delta'),
-                  delta: { text: bufferManager.remainingContent }
-                })}\n\n`);
+              // Check for any active component and force finish it
+              if (currentComponentId) {
+                const finalState = componentStates.get(currentComponentId);
+                if (finalState) {
+                  const finishedEvent = createFinishedEvent(
+                    currentComponentId,
+                    currentComponentName,
+                    finalState,
+                    'message_end'
+                  );
+                  res.write(`data: ${JSON.stringify(finishedEvent)}\n\n`);
+                }
               }
-            }
-            break;
-
-          case 'message_stop':
-            console.log('🏁 Message completed');
-            // Handle any remaining content
-            if (currentComponentId && bufferManager.buffer.trim()) {
-              const finalContent = bufferManager.buffer.slice(bufferManager.lastProcessedIndex);
-              if (finalContent.trim()) {
-                componentBuffer.appendToComponent(currentComponentId, finalContent);
-                const component = componentBuffer.getComponent(currentComponentId);
-                
-                res.write(`data: ${JSON.stringify({
-                  type: 'content_block_delta',
-                  metadata: createMetadata(currentComponentId, 'delta'),
-                  delta: { text: finalContent }
-                })}\n\n`);
-              }
-              componentBuffer.completeComponent(currentComponentId);
-              stopComponent();
-            }
-            break;
-
-          default:
-            console.log('⚠️ Unhandled event type:', event.type);
-        }
-
-        // Flush SSE to client
-        if (typeof res.flush === 'function') {
-          res.flush();
+              break;
+          }
+        } catch (error) {
+          log('⚠️ Failed to parse chunk data:', error);
+          res.write(`data: ${JSON.stringify({
+            type: 'error',
+            code: 'PARSE_ERROR',
+            message: `Failed to parse stream data: ${error.message}`,
+            retryable: false
+          })}\n\n`);
         }
       } catch (error) {
-        handleStreamError(error, res, currentComponentId, currentComponentName, bufferManager.buffer, stopComponent);
-        stream.destroy();
+        log('❌ Error processing chunk:', error);
       }
     });
 
-    // When the stream ends
-    stream.on('end', () => {
-      console.log('✅ Stream complete');
-
-      // If we still have a component open, close it
-      if (currentComponentId && accumulatedCode.trim()) {
-        accumulatedCode += buffer;
-        buffer = '';
-
-        if (validateComponent(accumulatedCode, currentComponentName)) {
-          const componentDuration = Date.now() - componentStartTime;
-          
-          // Update final component state
-          updateComponentState(currentComponentId, {
-            isStreaming: false,
-            isComplete: true,
-            code: accumulatedCode,
-            duration: componentDuration
-          });
-
-          // Final block delta
-          res.write(`data: ${JSON.stringify({
-            type: 'content_block_delta',
-            metadata: createMetadata(currentComponentId, 'delta'),
-            delta: { text: accumulatedCode }
-          })}\n\n`);
-
-          // Mark as complete
-          res.write(`data: ${JSON.stringify({
-            type: 'content_block_stop',
-            metadata: createMetadata(currentComponentId, 'stop')
-          })}\n\n`);
-        }
-      }
-
-      // Get final state of all components
-      const finalState = Array.from(componentStates.values()).map(state => ({
-        id: state.id,
-        name: state.name,
-        position: state.position,
-        isComplete: state.isComplete,
-        duration: state.duration
-      }));
-
-      // Safely get section contents
-      const getSectionComponents = (sectionName) => {
-        const section = sections.get(sectionName);
-        return section ? Array.from(section) : [];
-      };
-
-      // Calculate total components safely
-      const getTotalComponents = () => {
-        return ['header', 'main', 'footer'].reduce((total, sectionName) => {
-          const section = sections.get(sectionName);
-          return total + (section ? section.size : 0);
-        }, 0);
-      };
-
-      // Send final completion signal with complete metadata
-      res.write(`data: ${JSON.stringify({
-        type: 'message_stop',
-        metadata: {
-          sections: {
-            header: getSectionComponents('header'),
-            main: getSectionComponents('main'),
-            footer: getSectionComponents('footer')
-          },
-          totalComponents: getTotalComponents(),
-          components: finalState
-        }
-      })}\n\n`);
-
-      res.end();
-
-      // Clean up buffer manager
-      bufferManager.clear();
+    // Wait for stream to end
+    await new Promise((resolve, reject) => {
+      stream.on('end', resolve);
+      stream.on('error', reject);
     });
 
-    // Handle stream errors
-    stream.on('error', (err) => {
-      handleStreamError(err, res, currentComponentId, currentComponentName, bufferManager.buffer, stopComponent);
-    });
-    
+    // End the response
+    res.end();
   } catch (error) {
-    console.error('💥 Error:', error);
-    if (res.writable) {
-      res.write(`data: ${JSON.stringify({ 
+    log('❌ Controller error:', error);
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
         type: 'error',
-        code: error.code || 'GENERATION_ERROR',
+        code: 'CONTROLLER_ERROR',
         message: error.message,
-        retryable: error.retryable ?? false
+        retryable: false
       })}\n\n`);
       res.end();
     }

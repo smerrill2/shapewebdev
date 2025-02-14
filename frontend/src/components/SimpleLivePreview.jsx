@@ -19,7 +19,6 @@ import {
 import { cn } from './utils/cn';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
-import { Link } from 'react-router-dom';
 import {
   DEBUG_MODE,
   CRITICAL_COMPONENTS,
@@ -28,6 +27,14 @@ import {
   COMPONENT_STATUS,
   VALID_POSITIONS
 } from './utils/config';
+
+// Make Link optional for testing
+let Link;
+try {
+  Link = require('react-router-dom').Link;
+} catch (e) {
+  Link = ({ children, ...props }) => <a {...props}>{children}</a>;
+}
 
 // Error boundary for handling component errors
 class EnhancedErrorBoundary extends React.Component {
@@ -271,14 +278,21 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
   // Handle streaming deltas
   useEffect(() => {
     const handleStreamDelta = (event) => {
-      const { type, metadata, delta } = event;
+      // Safely access event data
+      const { type, metadata, delta } = event?.detail || {};
       
-      if (type === 'content_block_delta' && metadata?.componentId && delta?.text) {
+      // Validate event structure
+      if (!type || !metadata?.componentId) {
+        console.warn('⚠️ Invalid stream delta event:', event);
+        return;
+      }
+      
+      if (type === 'content_block_delta' && delta?.text) {
         codeBufferRef.current.startComponent(metadata.componentId);
         codeBufferRef.current.appendCode(metadata.componentId, delta.text);
       }
       
-      if (type === 'content_block_stop' && metadata?.componentId) {
+      if (type === 'content_block_stop') {
         codeBufferRef.current.completeComponent(metadata.componentId);
       }
     };
@@ -325,10 +339,17 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
 
   // Handle message_stop event
   useEffect(() => {
-    const handleMessageStop = () => {
+    const handleMessageStop = (event) => {
       if (DEBUG_MODE) {
         console.log('🛑 Stream ended, finalizing components');
       }
+
+      // Validate event structure
+      if (!event?.detail?.type === 'message_stop') {
+        console.warn('⚠️ Invalid message_stop event:', event);
+        return;
+      }
+
       // When stream ends, mark all components as complete if they have code
       setStreamingStates(prev => {
         const next = new Map(prev);
@@ -512,7 +533,7 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
           </div>
         </div>
         <div className="flex-1 relative w-full overflow-auto">
-          {(!transformedCode || transformedCode.length === 0) && Array.from(streamingStates.values()).some(state => state.isStreaming) && (
+          {Array.from(streamingStates.values()).some(state => state.isStreaming) && (
             <div className="p-4 text-muted-foreground bg-muted rounded-lg mb-4">
               <div className="flex items-center space-x-2">
                 <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-current" />
@@ -520,13 +541,13 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
               </div>
             </div>
           )}
-          {transformedCode && (
+          {stableCode && (
             <div className="preview-isolation-wrapper" data-testid="preview-container">
               <GlobalStyles />
               <LiveProvider 
                 code={transformedCode} 
                 scope={enhancedScope} 
-                noInline={true}  // Change to true to let LiveProvider handle rendering
+                noInline={true}
                 transformCode={transformCode}
               >
                 <LiveError 

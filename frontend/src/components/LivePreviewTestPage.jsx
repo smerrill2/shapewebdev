@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import SimpleLivePreview from './SimpleLivePreview';
-import { cn } from '../lib/utils';
+import { Button } from './ui/button';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './ui/card';
+import { NavigationMenu, NavigationMenuList, NavigationMenuItem, NavigationMenuTrigger, NavigationMenuContent, NavigationMenuLink } from './ui/navigation-menu';
+import { Home } from 'lucide-react';
+import { cn } from './utils/cn';
 import { extractFunctionDefinitions, cleanCode } from './utils/babelTransformations';
 
 const TEST_PROMPTS = {
@@ -214,6 +218,205 @@ export { ProductShowcase };
 /// END ProductShowcase
 `;
 
+// Add constants to match generateController.js
+const CRITICAL_COMPONENTS = new Set(['Header', 'Navigation', 'RootLayout']);
+const COMPOUND_COMPONENTS = {
+  NavigationMenu: {
+    subcomponentPatterns: {
+      List: /NavigationMenuList/,
+      Item: /NavigationMenuItem/,
+      Link: /NavigationMenuLink/,
+      Content: /NavigationMenuContent/,
+      Trigger: /NavigationMenuTrigger/
+    }
+  }
+};
+
+// Update test components to match generateController.js format
+const TEST_COMPONENTS = {
+  navigation: {
+    name: 'Navigation',
+    code: `
+/// START Navigation position=header
+function Navigation() {
+  return (
+    <NavigationMenu>
+      <NavigationMenuList>
+        <NavigationMenuItem>
+          <NavigationMenuTrigger>
+            <Home className="w-4 h-4 mr-2" />
+            Home
+          </NavigationMenuTrigger>
+          <NavigationMenuContent>
+            <NavigationMenuLink href="/">Dashboard</NavigationMenuLink>
+          </NavigationMenuContent>
+        </NavigationMenuItem>
+      </NavigationMenuList>
+    </NavigationMenu>
+  );
+}
+/// END Navigation
+    `.trim()
+  },
+  hero: {
+    name: 'HeroSection',
+    code: `
+/// START HeroSection position=main
+function HeroSection() {
+  return (
+    <section className="bg-gradient-to-br from-violet-500 to-purple-500 text-white py-20">
+      <div className="container mx-auto px-4 text-center">
+        <h1 className="text-4xl font-bold mb-6">Welcome to Our Mock Preview</h1>
+        <p className="text-xl mb-8">Test out the SimpleLivePreview with predefined components</p>
+        <Button size="lg" variant="secondary" className="bg-white text-purple-600 hover:bg-gray-100">
+          Get Started
+        </Button>
+      </div>
+    </section>
+  );
+}
+/// END HeroSection
+    `.trim()
+  },
+  priceTag: {
+    name: 'PriceTag',
+    code: `
+/// START PriceTag position=main
+function PriceTag({ price = 0, discount = 0, currency = "$" }) {
+  const numericPrice = Number(price) || 0;
+  const numericDiscount = Number(discount) || 0;
+  
+  const finalPrice = numericDiscount ? numericPrice * (1 - numericDiscount) : numericPrice;
+  
+  return (
+    <div className={cn("flex items-center gap-2")}>
+      <span className="text-2xl font-bold">
+        {currency}{finalPrice.toFixed(2)}
+      </span>
+      {numericDiscount > 0 && (
+        <span className="text-sm text-red-500 line-through">
+          {currency}{numericPrice.toFixed(2)}
+        </span>
+      )}
+      {numericDiscount > 0 && (
+        <span className="px-2 py-1 text-xs bg-red-100 text-red-600 rounded-full">
+          {(numericDiscount * 100)}% OFF
+        </span>
+      )}
+    </div>
+  );
+}
+/// END PriceTag
+    `.trim()
+  },
+  productCard: {
+    name: 'ProductCard',
+    code: `
+/// START ProductCard position=main
+function ProductCard({ 
+  image = "https://placekitten.com/400/300", 
+  title = "Product", 
+  description = "No description available", 
+  price = 0, 
+  discount = 0 
+}) {
+  return (
+    <Card className={cn("overflow-hidden")}>
+      <img src={image} alt={title} className="w-full h-48 object-cover" />
+      <div className="p-4 space-y-4">
+        <h3 className="text-xl font-semibold">{title}</h3>
+        <p className="text-gray-600">{description}</p>
+        <div className="mt-4">
+          <PriceTag price={Number(price)} discount={Number(discount)} />
+        </div>
+        <Button className="w-full">Add to Cart</Button>
+      </div>
+    </Card>
+  );
+}
+/// END ProductCard
+    `.trim()
+  },
+  productShowcase: {
+    name: 'ProductShowcase',
+    code: `
+/// START ProductShowcase position=main
+function ProductShowcase() {
+  const [sortBy, setSortBy] = React.useState('price');
+  const [filterDiscount, setFilterDiscount] = React.useState(false);
+  
+  const products = [
+    {
+      id: 1,
+      title: "Premium Headphones",
+      description: "High-quality wireless headphones with noise cancellation",
+      price: 299.99,
+      discount: 0.2,
+      image: "https://placekitten.com/400/300"
+    },
+    {
+      id: 2,
+      title: "Smart Watch",
+      description: "Feature-rich smartwatch with health tracking",
+      price: 199.99,
+      discount: 0,
+      image: "https://placekitten.com/401/300"
+    },
+    {
+      id: 3,
+      title: "Wireless Earbuds",
+      description: "Compact and powerful wireless earbuds",
+      price: 149.99,
+      discount: 0.15,
+      image: "https://placekitten.com/402/300"
+    }
+  ];
+
+  const filteredProducts = products
+    .filter(p => !filterDiscount || p.discount > 0)
+    .sort((a, b) => {
+      if (sortBy === 'price') {
+        return (a.price * (1 - (a.discount || 0))) - (b.price * (1 - (b.discount || 0)));
+      }
+      return a.title.localeCompare(b.title);
+    });
+
+  return (
+    <div className={cn("space-y-6")}>
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold">Our Products</h2>
+        <div className="flex gap-4">
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="px-3 py-2 border rounded-lg"
+          >
+            <option value="price">Sort by Price</option>
+            <option value="name">Sort by Name</option>
+          </select>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={filterDiscount}
+              onChange={(e) => setFilterDiscount(e.target.checked)}
+            />
+            Show Discounted Only
+          </label>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredProducts.map(product => (
+          <ProductCard key={product.id} {...product} />
+        ))}
+      </div>
+    </div>
+  );
+}
+/// END ProductShowcase
+    `.trim()
+  }
+};
+
 export default function LivePreviewTestPage() {
   const [registry, setRegistry] = useState({
     components: new Map(),
@@ -263,81 +466,143 @@ export default function LivePreviewTestPage() {
 
   // Process component start event with batched updates
   const processComponentStart = (event) => {
+    // Validate event structure
+    if (!event?.metadata?.componentId || !event?.metadata?.componentName) {
+      console.warn('⚠️ Invalid component_start event:', event);
+      return;
+    }
+
     const componentId = event.metadata.componentId;
     
-    if (componentId) {
-      // Update registry with just metadata, no code processing
-      setRegistry(prevRegistry => {
-        const newComponents = new Map(prevRegistry.components);
-        newComponents.set(componentId, {
-          name: event.metadata.componentName,
-          code: '',
-          isLayout: componentId === 'root_layout',
-          position: event.metadata.position || 'main'
-        });
-        return { ...prevRegistry, components: newComponents };
+    // Update registry and streaming states atomically
+    setRegistry(prevRegistry => {
+      const newComponents = new Map(prevRegistry.components);
+      newComponents.set(componentId, {
+        name: event.metadata.componentName,
+        code: '',
+        isLayout: componentId === 'root_layout',
+        position: event.metadata.position || 'main'
       });
+      return { ...prevRegistry, components: newComponents };
+    });
 
-      // Update streaming states
-      setStreamingStates(prevStates => {
-        const newStates = new Map(prevStates);
-        newStates.set(componentId, {
-          isStreaming: true,
-          isComplete: false,
-          error: null
-        });
-        return newStates;
+    setStreamingStates(prevStates => {
+      const newStates = new Map(prevStates);
+      newStates.set(componentId, {
+        isStreaming: true,
+        isComplete: false,
+        error: null,
+        startTime: Date.now()
       });
-    }
+      return newStates;
+    });
+
+    // Dispatch stream_start event for SimpleLivePreview
+    window.dispatchEvent(new CustomEvent('stream_start', {
+      detail: event
+    }));
   };
 
   // Simplified component delta processing - handle partial declarations
   const processComponentDelta = (event) => {
+    // Detailed validation logging
+    const validationResults = {
+      hasType: !!event?.type,
+      hasMetadata: !!event?.metadata,
+      hasComponentId: !!event?.metadata?.componentId,
+      hasComponentName: !!event?.metadata?.componentName,
+      hasDelta: !!event?.delta,
+      hasText: !!event?.delta?.text,
+      textLength: event?.delta?.text?.length || 0,
+      isTextEmpty: !event?.delta?.text?.trim(),
+      componentId: event?.metadata?.componentId,
+      componentName: event?.metadata?.componentName,
+      position: event?.metadata?.position || 'main'
+    };
+
+    // Log validation results in development
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🔍 Validating delta event:', validationResults);
+    }
+
+    // Validate event structure
+    if (!event?.metadata?.componentId || !event?.delta?.text || !event.delta.text.trim()) {
+      console.warn('⚠️ Invalid component_delta event:', {
+        event,
+        validationResults
+      });
+      return;
+    }
+
+    const componentId = event.metadata.componentId;
+
+    // Verify component is in streaming state
+    setStreamingStates(prevStates => {
+      const newStates = new Map(prevStates);
+      const currentState = newStates.get(componentId);
+      
+      if (!currentState?.isStreaming) {
+        console.warn('⚠️ Received delta for non-streaming component:', componentId);
+        newStates.set(componentId, {
+          isStreaming: true,
+          isComplete: false,
+          error: null,
+          startTime: Date.now()
+        });
+      }
+      
+      return newStates;
+    });
+
     setRegistry(prevRegistry => {
       const newComponents = new Map(prevRegistry.components);
-      const componentId = event.metadata.componentId;
       const existingComponent = componentId && newComponents.get(componentId);
       
       if (existingComponent) {
         const newText = event.delta.text;
         let updatedCode = existingComponent.code + newText;
         
-        // Remove duplicate React imports
-        updatedCode = updatedCode.replace(/import React from "react";/g, '');
-        if (!updatedCode.includes('import React')) {
-          updatedCode = 'import React from "react";\n' + updatedCode;
+        // Log code update in development
+        if (process.env.NODE_ENV === 'development') {
+          console.log('📝 Updating component code:', {
+            componentId,
+            componentName: existingComponent.name,
+            newTextLength: newText.length,
+            totalCodeLength: updatedCode.length,
+            hasStartMarker: updatedCode.includes('/// START'),
+            hasEndMarker: updatedCode.includes('/// END')
+          });
         }
         
-        // Only attempt to clean/transform if we have a complete function declaration
-        const hasCompleteFunction = /function\s+\w+\s*\([^)]*\)\s*{[\s\S]*}\s*$/.test(updatedCode);
-        if (hasCompleteFunction) {
-          try {
-            const cleanedCode = cleanCode(updatedCode);
-            updatedCode = cleanedCode;
-          } catch (error) {
-            // If cleaning fails, just use the raw accumulated code
-            console.log('Skipping code cleaning due to incomplete syntax');
-          }
-        }
-
         newComponents.set(componentId, {
           ...existingComponent,
           code: updatedCode
+        });
+      } else {
+        console.warn('⚠️ No existing component found for delta:', {
+          componentId,
+          registrySize: newComponents.size,
+          availableComponents: Array.from(newComponents.keys())
         });
       }
 
       return { ...prevRegistry, components: newComponents };
     });
 
-    // Dispatch event for SimpleLivePreview to handle
-    const streamEvent = new CustomEvent('stream_event', {
+    // Dispatch stream_delta event for SimpleLivePreview
+    window.dispatchEvent(new CustomEvent('stream_delta', {
       detail: event
-    });
-    window.dispatchEvent(streamEvent);
+    }));
   };
 
   // Simplified component stop processing
   const processComponentStop = (event) => {
+    // Validate event structure
+    if (!event?.metadata?.componentId) {
+      console.warn('⚠️ Invalid component_stop event:', event);
+      return;
+    }
+
     const stopComponentId = event.metadata.componentId;
     
     setStreamingStates(prevStates => {
@@ -353,7 +618,7 @@ export default function LivePreviewTestPage() {
     });
 
     // Update sections if provided
-    if (event.metadata.sections) {
+    if (event.metadata?.sections) {
       setRegistry(prev => ({
         ...prev,
         layout: {
@@ -363,7 +628,7 @@ export default function LivePreviewTestPage() {
     }
 
     // Dispatch stop event for SimpleLivePreview
-    const stopEvent = new CustomEvent('stream_event', {
+    const stopEvent = new CustomEvent('stream_delta', {
       detail: event
     });
     window.dispatchEvent(stopEvent);
@@ -407,6 +672,9 @@ export default function LivePreviewTestPage() {
       const decoder = new TextDecoder();
       let buffer = '';
 
+      // Keep loading true until we receive the first event
+      let receivedFirstEvent = false;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -421,6 +689,12 @@ export default function LivePreviewTestPage() {
           
           try {
             const event = JSON.parse(line.slice(5));
+            
+            // Set loading to false after receiving first valid event
+            if (!receivedFirstEvent) {
+              receivedFirstEvent = true;
+              setIsLoading(false);
+            }
             
             if (event.type === 'error') {
               setError(event.message || 'Unknown stream error');
@@ -443,7 +717,9 @@ export default function LivePreviewTestPage() {
 
               case 'message_stop':
                 // Dispatch message_stop event
-                window.dispatchEvent(new CustomEvent('stream_event', { detail: event }));
+                window.dispatchEvent(new CustomEvent('message_stop', {
+                  detail: event
+                }));
                 break;
 
               default:
@@ -460,41 +736,74 @@ export default function LivePreviewTestPage() {
       console.error('❌ Test error:', error);
       setError(error.message);
     } finally {
+      // Only set loading to false if we haven't received any events
       setIsLoading(false);
     }
   };
 
-  // Modify createComponentEvents to simulate streaming chunks
+  // Update createComponentEvents to match generateController.js format
   const createComponentEvents = (componentId, componentName, position, code) => {
-    // Split code into smaller chunks to simulate streaming
+    // Add markers if they don't exist
+    if (!code.includes('/// START')) {
+      code = `/// START ${componentName} position=${position}\n${code}\n/// END ${componentName}`;
+    }
+
     const chunkSize = 100;
     const chunks = [];
     for (let i = 0; i < code.length; i += chunkSize) {
       chunks.push(code.slice(i, i + chunkSize));
     }
 
+    // Check if this is a compound component
+    const isCompound = COMPOUND_COMPONENTS[componentName];
+    const isCompoundComplete = isCompound ? 
+      Object.values(COMPOUND_COMPONENTS[componentName].subcomponentPatterns)
+        .every(pattern => pattern.test(code)) : 
+      true;
+
     return [
       {
         type: 'content_block_start',
-        metadata: { componentId, componentName, position }
+        metadata: { 
+          componentId, 
+          componentName, 
+          position,
+          isCompoundComplete,
+          isCritical: CRITICAL_COMPONENTS.has(componentName)
+        }
       },
       ...chunks.map(chunk => ({
         type: 'content_block_delta',
-        metadata: { componentId },
+        metadata: { 
+          componentId,
+          componentName,
+          position,
+          isCompoundComplete
+        },
         delta: { text: chunk }
       })),
       {
         type: 'content_block_stop',
-        metadata: { componentId, isComplete: true }
+        metadata: { 
+          componentId, 
+          isComplete: true,
+          componentName,
+          position,
+          isCompoundComplete,
+          sections: {
+            header: position === 'header' ? [componentId] : [],
+            main: position === 'main' ? [componentId] : [],
+            footer: position === 'footer' ? [componentId] : []
+          }
+        }
       }
     ];
   };
 
+  // Update injectComponent to use the new format
   const injectComponent = async (componentId, componentName, position, code) => {
-    // Process through the same pipeline as streaming
     const events = createComponentEvents(componentId, componentName, position, code);
     
-    // Process events sequentially with small delays to simulate streaming
     for (const event of events) {
       switch (event.type) {
         case 'content_block_start':
@@ -507,51 +816,42 @@ export default function LivePreviewTestPage() {
           processComponentStop(event);
           break;
       }
-      // Small delay between chunks
+      // Small delay between chunks to simulate streaming
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   };
 
-  // Update injectAllSequential to handle async injection
+  // Update injectAllSequential to handle dependencies properly
   const injectAllSequential = async () => {
-    // Clear existing components
-    setRegistry({
+    // Clear existing components and states
+    const initialRegistry = {
       components: new Map(),
       layout: { sections: { header: [], main: [], footer: [] } }
-    });
-    setStreamingStates(new Map());
-
-    // Inject components with delays to simulate streaming
-    await injectPriceTag();
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    };
+    const initialStates = new Map();
     
-    await injectProductCard();
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    await injectProductShowcase();
-  };
+    setRegistry(initialRegistry);
+    setStreamingStates(initialStates);
 
-  // Update individual injection functions to be async
-  const injectTestComponent = async () => {
-    await injectComponent('test_header', 'Header', 'header', TEST_HEADER_COMPONENT);
-  };
+    // Wait for state updates to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
 
-  const injectPriceTag = async () => {
-    await injectComponent('price_tag', 'PriceTag', 'main', TEST_PRICE_TAG);
-  };
-
-  const injectProductCard = async () => {
-    if (!registry.components.has('price_tag')) {
-      await injectPriceTag();
+    try {
+      // Inject components in order of dependencies
+      console.log('Injecting PriceTag...');
+      await injectComponent('comp_pricetag', 'PriceTag', 'main', TEST_COMPONENTS.priceTag.code);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.log('Injecting ProductCard...');
+      await injectComponent('comp_productcard', 'ProductCard', 'main', TEST_COMPONENTS.productCard.code);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.log('Injecting ProductShowcase...');
+      await injectComponent('comp_productshowcase', 'ProductShowcase', 'main', TEST_COMPONENTS.productShowcase.code);
+    } catch (error) {
+      console.error('Error during sequential injection:', error);
+      setError(error.message);
     }
-    await injectComponent('product_card', 'ProductCard', 'main', TEST_PRODUCT_CARD);
-  };
-
-  const injectProductShowcase = async () => {
-    if (!registry.components.has('product_card')) {
-      await injectProductCard();
-    }
-    await injectComponent('product_showcase', 'ProductShowcase', 'main', TEST_PRODUCT_SHOWCASE);
   };
 
   return (
@@ -562,24 +862,6 @@ export default function LivePreviewTestPage() {
           <div className="flex gap-4 items-center flex-wrap">
             {/* Product Showcase Test Buttons */}
             <div className="flex gap-2">
-              <button
-                onClick={() => injectPriceTag().catch(console.error)}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-              >
-                Load PriceTag
-              </button>
-              <button
-                onClick={() => injectProductCard().catch(console.error)}
-                className="px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
-              >
-                Load ProductCard
-              </button>
-              <button
-                onClick={() => injectProductShowcase().catch(console.error)}
-                className="px-4 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700 transition-colors"
-              >
-                Load ProductShowcase
-              </button>
               <button
                 onClick={() => injectAllSequential().catch(console.error)}
                 className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 text-white hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 transition-colors"
