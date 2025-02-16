@@ -76,4 +76,8 @@ jest.mock('./components/ui/navigation-menu', () => ({
   NavigationMenuTrigger: ({ children, ...props }) => <button {...props}>{children}</button>,
   NavigationMenuContent: ({ children, ...props }) => <div {...props}>{children}</div>,
   NavigationMenuLink: ({ children, ...props }) => <a href="/" {...props}>{children}</a>,
-})); 
+}));
+
+// Mock Date.now() to return a fixed timestamp for consistent testing
+const FIXED_TIMESTAMP = 1612137600000; // February 1, 2021
+global.Date.now = jest.fn(() => FIXED_TIMESTAMP); 

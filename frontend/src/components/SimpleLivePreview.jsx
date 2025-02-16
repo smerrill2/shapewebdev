@@ -169,21 +169,22 @@ const assembleFinalCode = (components) => {
   });
   
   // Add each component's code, but strip any render statements
-  componentArray.forEach(component => {
+  componentArray.forEach((component, index) => {
     if (component.code && component.code.trim()) {
       // Remove any render statements from the component code
       let code = component.code.replace(/render\s*\([^)]+\);?/g, '').trim();
+      
+      // For the last component, ensure it has a default export
+      if (index === componentArray.length - 1) {
+        // Remove any existing export default statements
+        code = code.replace(/export\s+default\s+[^;]+;?/g, '');
+        // Add a clean default export at the end
+        code += `\n\nexport default ${component.name};`;
+      }
+      
       finalCode += code + '\n\n';
     }
   });
-  
-  // Add the default export for the last component
-  if (finalCode && componentArray.length > 0) {
-    const lastComponent = componentArray[componentArray.length - 1];
-    if (lastComponent.name) {
-      finalCode += `\nexport default ${lastComponent.name};`;
-    }
-  }
   
   console.log('📦 Assembled Components:', {
     componentCount: componentArray.length,
@@ -361,6 +362,13 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
               isComplete: true,
               error: null 
             });
+          } else {
+            // If no code is found, mark as error
+            next.set(id, {
+              isStreaming: false,
+              isComplete: false,
+              error: 'No code received for component'
+            });
           }
         });
         return next;
@@ -403,107 +411,54 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
 
   // Transform code before passing to LiveProvider - this is our SINGLE transformation point
   const transformedCode = useMemo(() => {
-    if (!stableCode) return '';
+    if (!stableCode) {
+      console.log('⚠️ No stable code to transform');
+      return '';
+    }
     try {
       // Log the code before transformation in debug mode
-      if (DEBUG_MODE) {
-        console.group('🔄 Code Transformation');
-        console.log('Input code:', stableCode);
-      }
+      console.group('🔄 Code Transformation');
+      console.log('Input code:', stableCode);
 
-      // Single transformation using cleanCodeForLive
+      // Use the cleanCodeForLive function from babelTransformations.js
       const result = cleanCodeForLive(stableCode);
 
-      // Log the transformed code in debug mode
-      if (DEBUG_MODE) {
-        console.log('Transformed code:', result);
-        console.groupEnd();
-      }
+      // Log the transformed code
+      console.log('Transformed code:', result);
+      console.groupEnd();
 
       return result;
     } catch (error) {
-      console.error('Error transforming code:', error);
-      return stableCode;
+      console.error('❌ Error transforming code:', error);
+      // Throw the error to trigger LiveError
+      throw error;
     }
   }, [stableCode]);
 
   // Add Babel transform function - only for JSX transformation
   const transformCode = useMemo(() => (code) => {
     try {
-      // Log the input code in debug mode
-      if (DEBUG_MODE) {
-        console.group('🔄 Babel JSX Transformation');
-        console.log('Input code:', code);
-      }
+      console.group('🔄 Babel JSX Transformation');
+      console.log('Input code:', code);
 
-      // First format the code to ensure proper structure
-      let formattedCode = code
-        // Split into lines and trim each line
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line)  // Remove empty lines
-        .join('\n');
-
-      // Fix JSX formatting issues
-      formattedCode = formattedCode
-        // Fix className attributes
-        .replace(/className=\{([^}]+)\}/g, (match, content) => {
-          // Remove extra curly braces in className values
-          const cleaned = content.replace(/[{}]/g, '').trim();
-          return `className="${cleaned}"`;
-        })
-        // Add spaces around JSX expressions
-        .replace(/\{(\w+)\}/g, '{ $1 }')
-        // Fix self-closing tags
-        .replace(/(\s*)\/>/, ' />')
-        // Ensure proper spacing in component props
-        .replace(/=\{/g, '={ ')
-        .replace(/\}/g, ' }')
-        // Fix render statement
-        .replace(/render\((.*?)\);?$/, (match, content) => {
-          return `render(${content.trim()});`;
-        });
-
-      // Transform with Babel
-      const result = Babel.transform(formattedCode, {
-        presets: [
-          ['react', {
-            runtime: 'classic',
-            development: true,
-            throwIfNamespace: false
-          }]
-        ],
+      // Use Babel transform with minimal configuration
+      const result = Babel.transform(code, {
+        presets: ['react'],
         plugins: ['transform-react-jsx'],
         filename: 'live.js',
         sourceType: 'script',
         configFile: false,
-        babelrc: false,
-        retainLines: true,
-        compact: false,
-        minified: false,
-        comments: true,
-        parserOpts: {
-          strictMode: false,
-          allowReturnOutsideFunction: true,
-          allowSuperOutsideMethod: true
-        }
+        babelrc: false
       }).code;
 
-      // Log the transformed code in debug mode
-      if (DEBUG_MODE) {
-        console.log('Transformed code:', result);
-        console.groupEnd();
-      }
+      console.log('Babel transformed code:', result);
+      console.groupEnd();
 
       return result;
     } catch (error) {
-      console.error('Babel transform error:', error);
-      // On error, try to format and return the original code
-      return code
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line)
-        .join('\n');
+      console.error('❌ Babel transform error:', error);
+      // Throw the error to trigger LiveError
+      throw error;
     }
   }, []);
 
@@ -521,14 +476,20 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
         <div className="text-sm p-2 bg-muted border-b sticky top-0 z-[60] flex justify-between items-center">
           <span>Live Preview {DEBUG_MODE && `(${registry.components.size} components)`}</span>
           <div className="flex gap-2">
-            {Array.from(registry.components.values()).map(component => (
-              <button
-                key={component.name}
-                onClick={() => onShowCode?.(component)}
-                className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded"
+            {Array.from(registry.components.entries()).map(([id, component]) => (
+              <Button
+                key={id}
+                variant="outline"
+                size="sm"
+                onClick={() => onShowCode?.(id)}
+                className={cn(
+                  'min-w-[100px] text-left',
+                  streamingStates.get(id)?.isStreaming && 'animate-pulse',
+                  streamingStates.get(id)?.error && 'border-red-500'
+                )}
               >
-                Show {component.name}
-              </button>
+                Show {component.displayName || component.name}
+              </Button>
             ))}
           </div>
         </div>
@@ -539,6 +500,19 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
                 <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-current" />
                 <span>Generating components...</span>
               </div>
+              {DEBUG_MODE && (
+                <div className="mt-2 text-xs space-y-1">
+                  {Array.from(registry.components.entries()).map(([id, component]) => (
+                    <div key={id} className="flex items-center space-x-2">
+                      <span className={cn(
+                        "inline-block w-2 h-2 rounded-full",
+                        streamingStates.get(id)?.isStreaming ? "bg-green-500" : "bg-gray-500"
+                      )} />
+                      <span>{component.name} ({component.position})</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {stableCode && (
@@ -549,16 +523,17 @@ const SimpleLivePreview = ({ registry, streamingStates = new Map(), setStreaming
                 scope={enhancedScope} 
                 noInline={true}
                 transformCode={transformCode}
+                data-testid="live-provider"
               >
                 <LiveError 
                   className="text-destructive p-4 bg-destructive/10 rounded mb-4 sticky top-0 z-[100]" 
-                  data-testid="preview-error" 
+                  data-testid="live-error" 
                 />
                 <div 
                   className={cn("w-full preview-root", "space-y-8 p-4")} 
-                  data-testid="preview-content"
+                  data-testid="live-preview-container"
                 >
-                  <LivePreview />
+                  <LivePreview data-testid="live-preview" />
                 </div>
               </LiveProvider>
             </div>

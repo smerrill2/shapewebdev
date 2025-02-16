@@ -3,7 +3,7 @@ import SimpleLivePreview from './SimpleLivePreview';
 import { Button } from './ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './ui/card';
 import { NavigationMenu, NavigationMenuList, NavigationMenuItem, NavigationMenuTrigger, NavigationMenuContent, NavigationMenuLink } from './ui/navigation-menu';
-import { Home } from 'lucide-react';
+import { Home, Users, DollarSign, TrendingUp, Activity } from 'lucide-react';
 import { cn } from './utils/cn';
 import { extractFunctionDefinitions, cleanCode } from './utils/babelTransformations';
 
@@ -112,11 +112,16 @@ const TEST_PRODUCT_CARD = `
 /// START ProductCard position=main
 import React from 'react';
 import { Button } from './ui/button';
-import { Card } from './ui/card';
 import { cn } from '../lib/utils';
 import { PriceTag } from './PriceTag';
 
-function ProductCard({ image = "https://placekitten.com/400/300", title = "Product", description = "No description available", price = 0, discount = 0 }) {
+function ProductCard({ 
+  image = "https://placekitten.com/400/300", 
+  title = "Product", 
+  description = "No description available", 
+  price = 0, 
+  discount = 0 
+}) {
   return (
     <Card className={cn("overflow-hidden")}>
       <img src={image} alt={title} className="w-full h-48 object-cover" />
@@ -313,6 +318,10 @@ function PriceTag({ price = 0, discount = 0, currency = "$" }) {
     name: 'ProductCard',
     code: `
 /// START ProductCard position=main
+import React from 'react';
+import { Button } from './ui/button';
+import { cn } from '../lib/utils';
+
 function ProductCard({ 
   image = "https://placekitten.com/400/300", 
   title = "Product", 
@@ -417,6 +426,8 @@ function ProductShowcase() {
   }
 };
 
+const TEST_STREAM_EVENTS = [];
+
 export default function LivePreviewTestPage() {
   const [registry, setRegistry] = useState({
     components: new Map(),
@@ -428,6 +439,62 @@ export default function LivePreviewTestPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedComponent, setSelectedComponent] = useState(null);
+
+  // Add a buffer to store code chunks
+  const [codeBuffer, setCodeBuffer] = useState(new Map());
+
+  // Update simulateTestStream to handle events directly
+  const simulateTestStream = async () => {
+    setIsLoading(true);
+    try {
+      // Reset states
+      setRegistry({
+        components: new Map(),
+        layout: { sections: { header: [], main: [], footer: [] } }
+      });
+      setStreamingStates(new Map());
+      setError(null);
+
+      // Simulate stream with delays
+      for (const event of TEST_STREAM_EVENTS) {
+        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between events
+        
+        // Handle events directly based on type
+        switch (event.type) {
+          case 'content_block_start':
+            processComponentStart(event);
+            break;
+          case 'content_block_delta':
+            processComponentDelta(event);
+            break;
+          case 'content_block_stop':
+            processComponentStop(event);
+            break;
+          case 'message_stop':
+            // Handle message stop
+            setStreamingStates(prev => {
+              const next = new Map(prev);
+              Array.from(prev.keys()).forEach(id => {
+                next.set(id, { 
+                  isStreaming: false, 
+                  isComplete: true,
+                  error: null 
+                });
+              });
+              return next;
+            });
+            break;
+          default:
+            console.warn('Unknown event type:', event.type);
+        }
+      }
+    } catch (err) {
+      setError(err.message);
+      console.error('Error in test stream:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Debug logging for state changes
   useEffect(() => {
@@ -466,22 +533,70 @@ export default function LivePreviewTestPage() {
 
   // Process component start event with batched updates
   const processComponentStart = (event) => {
-    // Validate event structure
+    // Enhanced validation and logging
+    console.group('🎬 Processing Component Start');
+    console.log('Event:', {
+      type: event.type,
+      metadata: event.metadata,
+      raw: event,
+      timestamp: new Date().toISOString()
+    });
+
+    // Validate event structure with detailed logging
     if (!event?.metadata?.componentId || !event?.metadata?.componentName) {
-      console.warn('⚠️ Invalid component_start event:', event);
+      console.error('⚠️ Invalid component_start event - missing required fields:', {
+        hasComponentId: Boolean(event?.metadata?.componentId),
+        hasComponentName: Boolean(event?.metadata?.componentName),
+        metadata: event?.metadata
+      });
+      console.groupEnd();
       return;
     }
 
     const componentId = event.metadata.componentId;
+    // Ensure we get the full component name and validate it
+    const componentName = event.metadata.componentName.trim();
+    const position = event.metadata.position || 'main';
+
+    if (componentName.length <= 1) {
+      console.warn('⚠️ Suspicious component name (too short):', {
+        componentName,
+        componentId,
+        position
+      });
+    }
+
+    console.log('📦 Creating Component:', {
+      componentId,
+      componentName,
+      position,
+      rawName: event.metadata.componentName,
+      fullMetadata: event.metadata,
+      timestamp: new Date().toISOString(),
+      nameLength: componentName.length,
+      hasSpaces: componentName.includes(' '),
+      nameFirstChar: componentName.charAt(0),
+      nameValidation: /^[A-Z][a-zA-Z0-9]*$/.test(componentName)
+    });
     
     // Update registry and streaming states atomically
     setRegistry(prevRegistry => {
       const newComponents = new Map(prevRegistry.components);
+      const displayName = componentName.replace(/([A-Z])/g, ' $1').trim();
+      
+      console.log('🏷️ Component Names:', {
+        original: componentName,
+        display: displayName,
+        id: componentId,
+        existingComponents: Array.from(prevRegistry.components.keys())
+      });
+
       newComponents.set(componentId, {
-        name: event.metadata.componentName,
+        name: componentName,
+        displayName,
         code: '',
         isLayout: componentId === 'root_layout',
-        position: event.metadata.position || 'main'
+        position
       });
       return { ...prevRegistry, components: newComponents };
     });
@@ -492,146 +607,141 @@ export default function LivePreviewTestPage() {
         isStreaming: true,
         isComplete: false,
         error: null,
-        startTime: Date.now()
+        startTime: Date.now(),
+        componentName // Store the component name for debugging
       });
       return newStates;
     });
 
     // Dispatch stream_start event for SimpleLivePreview
     window.dispatchEvent(new CustomEvent('stream_start', {
-      detail: event
+      detail: {
+        ...event,
+        metadata: {
+          ...event.metadata,
+          debug: {
+            originalName: event.metadata.componentName,
+            processedName: componentName,
+            timestamp: Date.now()
+          }
+        }
+      }
     }));
+    
+    console.groupEnd();
   };
 
-  // Simplified component delta processing - handle partial declarations
+  // Process component delta processing - handle partial declarations
   const processComponentDelta = (event) => {
-    // Detailed validation logging
-    const validationResults = {
-      hasType: !!event?.type,
-      hasMetadata: !!event?.metadata,
-      hasComponentId: !!event?.metadata?.componentId,
-      hasComponentName: !!event?.metadata?.componentName,
-      hasDelta: !!event?.delta,
-      hasText: !!event?.delta?.text,
-      textLength: event?.delta?.text?.length || 0,
-      isTextEmpty: !event?.delta?.text?.trim(),
-      componentId: event?.metadata?.componentId,
-      componentName: event?.metadata?.componentName,
-      position: event?.metadata?.position || 'main'
-    };
-
-    // Log validation results in development
-    if (process.env.NODE_ENV === 'development') {
-      console.log('🔍 Validating delta event:', validationResults);
-    }
-
-    // Validate event structure
-    if (!event?.metadata?.componentId || !event?.delta?.text || !event.delta.text.trim()) {
-      console.warn('⚠️ Invalid component_delta event:', {
-        event,
-        validationResults
+    console.group('📝 Processing Component Delta');
+    
+    // Validate event structure with detailed logging
+    if (!event?.metadata?.componentId || !event?.delta?.text) {
+      console.error('⚠️ Invalid component_delta event:', {
+        hasComponentId: Boolean(event?.metadata?.componentId),
+        hasText: Boolean(event?.delta?.text),
+        event
       });
+      console.groupEnd();
       return;
     }
 
     const componentId = event.metadata.componentId;
+    const componentName = event.metadata.componentName?.trim();
+    const position = event.metadata.position || 'main';
+    const deltaText = event.delta.text;
 
-    // Verify component is in streaming state
+    // Update code buffer first
+    setCodeBuffer(prev => {
+      const next = new Map(prev);
+      const currentBuffer = next.get(componentId) || '';
+      next.set(componentId, currentBuffer + deltaText);
+      return next;
+    });
+
+    // Update streaming state
     setStreamingStates(prevStates => {
       const newStates = new Map(prevStates);
-      const currentState = newStates.get(componentId);
+      const currentState = newStates.get(componentId) || {
+        isStreaming: true,
+        isComplete: false,
+        error: null,
+        startTime: Date.now(),
+        componentName,
+        receivedDeltas: 0
+      };
       
-      if (!currentState?.isStreaming) {
-        console.warn('⚠️ Received delta for non-streaming component:', componentId);
-        newStates.set(componentId, {
-          isStreaming: true,
-          isComplete: false,
-          error: null,
-          startTime: Date.now()
-        });
-      }
+      newStates.set(componentId, {
+        ...currentState,
+        isStreaming: true,
+        error: null,
+        receivedDeltas: (currentState.receivedDeltas || 0) + 1,
+        lastDeltaTime: Date.now()
+      });
       
       return newStates;
     });
 
-    setRegistry(prevRegistry => {
-      const newComponents = new Map(prevRegistry.components);
-      const existingComponent = componentId && newComponents.get(componentId);
-      
-      if (existingComponent) {
-        const newText = event.delta.text;
-        let updatedCode = existingComponent.code + newText;
-        
-        // Log code update in development
-        if (process.env.NODE_ENV === 'development') {
-          console.log('📝 Updating component code:', {
-            componentId,
-            componentName: existingComponent.name,
-            newTextLength: newText.length,
-            totalCodeLength: updatedCode.length,
-            hasStartMarker: updatedCode.includes('/// START'),
-            hasEndMarker: updatedCode.includes('/// END')
-          });
-        }
-        
-        newComponents.set(componentId, {
-          ...existingComponent,
-          code: updatedCode
-        });
-      } else {
-        console.warn('⚠️ No existing component found for delta:', {
-          componentId,
-          registrySize: newComponents.size,
-          availableComponents: Array.from(newComponents.keys())
-        });
-      }
-
-      return { ...prevRegistry, components: newComponents };
-    });
-
-    // Dispatch stream_delta event for SimpleLivePreview
     window.dispatchEvent(new CustomEvent('stream_delta', {
-      detail: event
+      detail: {
+        ...event,
+        metadata: {
+          ...event.metadata,
+          debug: {
+            hasStartMarker: deltaText.includes('/// START'),
+            hasEndMarker: deltaText.includes('/// END'),
+            textLength: deltaText.length,
+            timestamp: Date.now(),
+            componentName
+          }
+        }
+      }
     }));
+
+    console.groupEnd();
   };
 
-  // Simplified component stop processing
+  // Add processComponentStop handler
   const processComponentStop = (event) => {
-    // Validate event structure
-    if (!event?.metadata?.componentId) {
-      console.warn('⚠️ Invalid component_stop event:', event);
-      return;
-    }
+    const { componentId, componentName, position } = event.metadata;
+    if (!componentId) return;
 
-    const stopComponentId = event.metadata.componentId;
-    
-    setStreamingStates(prevStates => {
-      const newStates = new Map(prevStates);
-      if (stopComponentId) {
-        newStates.set(stopComponentId, {
-          isStreaming: false,
-          isComplete: true,
-          error: null
+    // Check if we have buffered code for this component
+    setCodeBuffer(prev => {
+      const bufferedCode = prev.get(componentId);
+      if (bufferedCode) {
+        // Clean the buffered code before setting it in the registry
+        const cleanBufferedCode = bufferedCode.split('\n').filter(line => !line.trim().startsWith('///')).join('\n');
+        setRegistry(prevRegistry => {
+          const newComponents = new Map(prevRegistry.components);
+          newComponents.set(componentId, {
+            name: componentName || `Component_${componentId}`,
+            displayName: (componentName || `Component ${componentId}`).replace(/([A-Z])/g, ' $1').trim(),
+            code: cleanBufferedCode,
+            isLayout: componentId === 'root_layout',
+            position: position || 'main'
+          });
+          return { ...prevRegistry, components: newComponents };
         });
+
+        // Clear the buffer for this component
+        const next = new Map(prev);
+        next.delete(componentId);
+        return next;
       }
-      return newStates;
+      return prev;
     });
 
-    // Update sections if provided
-    if (event.metadata?.sections) {
-      setRegistry(prev => ({
-        ...prev,
-        layout: {
-          sections: { ...event.metadata.sections }
-        }
-      }));
-    }
-
-    // Dispatch stop event for SimpleLivePreview
-    const stopEvent = new CustomEvent('stream_delta', {
-      detail: event
+    // Update streaming state to complete
+    setStreamingStates(prev => {
+      const next = new Map(prev);
+      next.set(componentId, {
+        isStreaming: false,
+        isComplete: true,
+        error: null
+      });
+      return next;
     });
-    window.dispatchEvent(stopEvent);
   };
 
   // Simplify runTest to just handle events
@@ -640,7 +750,7 @@ export default function LivePreviewTestPage() {
     setEvents([]);
     setError(null);
     
-    // Reset states with proper Map initialization
+    // Initialize clean states
     const initialRegistry = {
       components: new Map(),
       layout: { sections: { header: [], main: [], footer: [] } }
@@ -649,6 +759,9 @@ export default function LivePreviewTestPage() {
     
     setRegistry(initialRegistry);
     setStreamingStates(initialStreamingStates);
+
+    // Wait for state updates to complete
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     try {
       const requestUrl = `http://localhost:5001/api/generate?projectId=${TEST_PROJECT_ID}&versionId=${TEST_VERSION_ID}`;
@@ -664,8 +777,7 @@ export default function LivePreviewTestPage() {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP Error: ${response.status} - ${errorText}`);
+        throw new Error(`HTTP Error: ${response.status}`);
       }
 
       const reader = response.body.getReader();
@@ -701,7 +813,7 @@ export default function LivePreviewTestPage() {
               continue;
             }
             
-            // Process events and dispatch to SimpleLivePreview
+            // Process events in order
             switch (event.type) {
               case 'content_block_start':
                 processComponentStart(event);
@@ -716,7 +828,6 @@ export default function LivePreviewTestPage() {
                 break;
 
               case 'message_stop':
-                // Dispatch message_stop event
                 window.dispatchEvent(new CustomEvent('message_stop', {
                   detail: event
                 }));
@@ -736,7 +847,6 @@ export default function LivePreviewTestPage() {
       console.error('❌ Test error:', error);
       setError(error.message);
     } finally {
-      // Only set loading to false if we haven't received any events
       setIsLoading(false);
     }
   };
@@ -840,14 +950,36 @@ export default function LivePreviewTestPage() {
       // Inject components in order of dependencies
       console.log('Injecting PriceTag...');
       await injectComponent('comp_pricetag', 'PriceTag', 'main', TEST_COMPONENTS.priceTag.code);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Longer delay after PriceTag to ensure it's fully processed
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       console.log('Injecting ProductCard...');
       await injectComponent('comp_productcard', 'ProductCard', 'main', TEST_COMPONENTS.productCard.code);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Longer delay after ProductCard to ensure it's fully processed
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       console.log('Injecting ProductShowcase...');
       await injectComponent('comp_productshowcase', 'ProductShowcase', 'main', TEST_COMPONENTS.productShowcase.code);
+      // Wait for the last component to be processed
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Send the final message_stop event
+      window.dispatchEvent(new CustomEvent('message_stop', {
+        detail: { type: 'message_stop' }
+      }));
+
+      // Update the registry sections
+      setRegistry(prev => ({
+        ...prev,
+        layout: {
+          sections: {
+            header: [],
+            main: ['comp_pricetag', 'comp_productcard', 'comp_productshowcase'],
+            footer: []
+          }
+        }
+      }));
+
     } catch (error) {
       console.error('Error during sequential injection:', error);
       setError(error.message);
@@ -860,15 +992,14 @@ export default function LivePreviewTestPage() {
         <div className="max-w-7xl mx-auto">
           <h1 className="text-2xl font-bold text-white mb-4">Live Preview Test Page</h1>
           <div className="flex gap-4 items-center flex-wrap">
-            {/* Product Showcase Test Buttons */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => injectAllSequential().catch(console.error)}
-                className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 text-white hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 transition-colors"
-              >
-                Load All Sequential
-              </button>
-            </div>
+            {/* Add Test Stream Button */}
+            <Button
+              onClick={simulateTestStream}
+              className="bg-green-600 hover:bg-green-700 text-white"
+              disabled={isLoading}
+            >
+              Run Test Stream
+            </Button>
 
             <div className="h-8 border-r border-slate-600" />
             

@@ -64,12 +64,12 @@ const CRITICAL_COMPONENTS = new Set([
 // Debug mode flag
 const DEBUG_MODE = process.env.NODE_ENV === 'development';
 
-// More strict marker pattern that won't include export function
-const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([\w]+))?\s*$/m;
+// More lenient marker pattern that allows for multi-word names
+const MARKER_PATTERN = /\/\/\/\s*(START|END)\s+([A-Za-z][a-zA-Z0-9]*(?:\s+[A-Za-z][a-zA-Z0-9]*)*(?:Section|Layout|Component)?)\s*(?:position=([a-z]+))?\s*$/m;
 const INCOMPLETE_MARKER = /\/\/\/\s*(START|END)\s*$/m;
 
-// Add validation for component names with H prefix
-const VALID_COMPONENT_NAME = /^(?!H+[A-Z])[A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?$/;
+// Update validation for component names to be more lenient
+const VALID_COMPONENT_NAME = /^[A-Za-z][a-zA-Z0-9]*(?:\s+[A-Za-z][a-zA-Z0-9]*)*(?:Section|Layout|Component)?$/;
 
 // Add test ID validation
 const isTestId = (id) => id.startsWith('test-');
@@ -808,17 +808,28 @@ const stopComponent = (res, componentDuration = 0) => {
   accumulatedCode = '';
 };
 
-// Enhanced marker processing helper
+// Update the processMarkerText function to handle multi-word names
 const processMarkerText = (text) => {
   try {
     // Look for START or END markers with more detailed validation
-    const startMatch = text.match(/\/\/\/\s*START\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=(\w+))?/);
-    const endMatch = text.match(/\/\/\/\s*END\s+([A-Z][a-zA-Z0-9]*(?:Section|Layout|Component)?)/);
-    const incompleteMarker = text.match(/\/\/\/\s*(?:START|END)\s*$/);
+    const startMatch = text.match(/^\/\/\/\s*START\s+([A-Za-z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*(?:position=([a-z]+))?\s*$/);
+    const endMatch = text.match(/^\/\/\/\s*(?:END|STOP)\s+([A-Za-z][a-zA-Z0-9]*(?:Section|Layout|Component)?)\s*$/);
+    const incompleteMarker = text.match(/^\/\/\/\s*(?:START|END|STOP)(?:\s*$|\s+[A-Za-z][a-zA-Z0-9]*\s*position=\s*$)/);
 
     // If we find an incomplete marker, return null to buffer it
     if (incompleteMarker) {
       log('⚠️ Found incomplete marker, buffering:', text);
+      return { incomplete: true };
+    }
+
+    // Handle split markers that might be incomplete
+    if (text.trim() === '/// STA' || text.trim() === '/// ST' || text.trim() === '/// S') {
+      return { incomplete: true };
+    }
+    if (text.trim() === '/// END' || text.trim() === '/// EN' || text.trim() === '/// E') {
+      return { incomplete: true };
+    }
+    if (text.trim() === '/// STOP' || text.trim() === '/// STO' || text.trim() === '/// ST') {
       return { incomplete: true };
     }
 
@@ -828,14 +839,29 @@ const processMarkerText = (text) => {
         log('⚠️ Invalid START marker - missing component name:', text);
         return null;
       }
+
+      // Clean and normalize the component name
+      const cleanName = componentName
+        .trim()
+        .replace(/^H+(?=[A-Z])/, ''); // Only remove H prefix if followed by capital letter
+      const aliasedName = COMPONENT_ALIASES[cleanName] || cleanName;
+
+      log('🔍 Processing START marker:', {
+        originalMarker: text,
+        originalName: componentName,
+        cleanName,
+        aliasedName,
+        position
+      });
+
       return {
         type: 'content_block_start',
         metadata: {
-          componentId: `comp_${componentName.toLowerCase()}`,
-          componentName,
-          position: position.toLowerCase(),
+          componentId: `comp_${aliasedName.toLowerCase()}`,
+          componentName: aliasedName,
+          position,
           isCompoundComplete: true,
-          isCritical: CRITICAL_COMPONENTS.has(componentName)
+          isCritical: CRITICAL_COMPONENTS.has(aliasedName)
         }
       };
     }
@@ -843,17 +869,32 @@ const processMarkerText = (text) => {
     if (endMatch) {
       const [, componentName] = endMatch;
       if (!componentName) {
-        log('⚠️ Invalid END marker - missing component name:', text);
+        log('⚠️ Invalid END/STOP marker - missing component name:', text);
         return null;
       }
+
+      // Clean and normalize the component name
+      const cleanName = componentName
+        .trim()
+        .replace(/^H+(?=[A-Z])/, ''); // Only remove H prefix if followed by capital letter
+      const aliasedName = COMPONENT_ALIASES[cleanName] || cleanName;
+
+      log('🔍 Processing END marker:', {
+        originalMarker: text,
+        originalName: componentName,
+        cleanName,
+        aliasedName
+      });
+
       return {
         type: 'content_block_stop',
         metadata: {
-          componentId: `comp_${componentName.toLowerCase()}`,
-          componentName,
+          componentId: `comp_${aliasedName.toLowerCase()}`,
+          componentName: aliasedName,
+          position: 'main', // We'll update this with the actual position from state
           isComplete: true,
           isCompoundComplete: true,
-          isCritical: CRITICAL_COMPONENTS.has(componentName)
+          isCritical: CRITICAL_COMPONENTS.has(aliasedName)
         }
       };
     }
@@ -920,112 +961,148 @@ const createFinishedEvent = (componentId, componentName, state, reason = 'normal
 const processChunkWithMarkers = (text, currentState) => {
   const events = [];
   const lines = text.split('\n');
-  const nonMarkerLines = [];
   let currentContent = '';
   
   for (let line of lines) {
     // If we have buffered content, prepend it to the current line
-    if (lineBuffer) {
-      line = lineBuffer + line;
-      lineBuffer = '';
+    if (this.lineBuffer) {
+      line = this.lineBuffer + line;
+      this.lineBuffer = '';
     }
 
+    // Try to process the line as a marker
     const markerInfo = processMarkerText(line);
 
     if (markerInfo?.incomplete) {
       // Store incomplete line in buffer
-      lineBuffer = line;
+      this.lineBuffer = line;
       continue;
     }
 
     if (markerInfo) {
-      // If we have accumulated content before this marker, add it to the current component
-      if (currentContent.trim() && currentState.currentComponentId) {
-        const state = componentStates.get(currentState.currentComponentId);
-        if (state) {
-          state.code = (state.code || '') + currentContent;
-          state.lastUpdated = Date.now();
-          componentStates.set(currentState.currentComponentId, state);
-        }
-      }
-      currentContent = '';
-
       // Found a valid marker
-      events.push(markerInfo);
-
-      // Validate state consistency for markers
       if (markerInfo.type === 'content_block_start') {
-        if (currentState.currentComponentId) {
-          log('⚠️ Found START marker while component is active:', {
-            current: currentState.currentComponentId,
-            new: markerInfo.metadata.componentId
-          });
-          
-          // Force stop the current component
-          const forcedState = componentStates.get(currentState.currentComponentId);
-          if (forcedState) {
-            // Send stop event first
+        // If we have accumulated content before this marker, add it to the current component
+        if (currentContent.trim() && currentState.currentComponentId) {
+          const state = this.componentStates.get(currentState.currentComponentId);
+          if (state) {
+            state.code = (state.code || '') + currentContent;
+            state.lastUpdated = Date.now();
+            this.componentStates.set(currentState.currentComponentId, state);
+
+            // Send content delta event
             events.push({
-              type: 'content_block_stop',
+              type: 'content_block_delta',
               metadata: {
                 componentId: currentState.currentComponentId,
                 componentName: currentState.currentComponentName,
-                isComplete: true,
+                position: state.position || 'main',
                 isCompoundComplete: true,
                 isCritical: CRITICAL_COMPONENTS.has(currentState.currentComponentName)
-              }
+              },
+              delta: { text: currentContent }
             });
-            
-            // Then send the finished event with complete code
-            events.push(createFinishedEvent(
-              currentState.currentComponentId,
-              currentState.currentComponentName,
-              forcedState,
-              'forced_by_new_component'
-            ));
           }
         }
+        currentContent = '';
+
+        // Save current component as parent before switching to new component
+        if (currentState.currentComponentId) {
+          currentState.parentComponentId = currentState.currentComponentId;
+          currentState.parentComponentName = currentState.currentComponentName;
+        }
+
+        // Start new component
         currentState.currentComponentId = markerInfo.metadata.componentId;
         currentState.currentComponentName = markerInfo.metadata.componentName;
+        
+        // Initialize new component state
+        this.updateComponentState(currentState.currentComponentId, {
+          code: '',
+          position: markerInfo.metadata.position,
+          startTime: Date.now()
+        });
+
+        // Send start event
+        events.push(markerInfo);
       } else if (markerInfo.type === 'content_block_stop') {
         const { componentId, componentName } = markerInfo.metadata;
-        if (componentId !== currentState.currentComponentId) {
-          log('⚠️ Mismatched END marker:', {
-            expected: currentState.currentComponentId,
-            received: componentId
-          });
-        }
         
         // Get the final state of the component
-        const finishedState = componentStates.get(componentId);
+        const finishedState = this.componentStates.get(componentId);
         if (finishedState) {
-          // Add component_finished event with complete code
-          events.push(createFinishedEvent(componentId, componentName, finishedState));
+          // Add any remaining content to the current component before completing it
+          if (currentContent.trim()) {
+            finishedState.code = (finishedState.code || '') + currentContent;
+            finishedState.lastUpdated = Date.now();
+            this.componentStates.set(componentId, finishedState);
+            
+            // Send content delta event for the accumulated content
+            events.push({
+              type: 'content_block_delta',
+              metadata: {
+                componentId,
+                componentName,
+                position: finishedState.position || 'main',
+                isCompoundComplete: true,
+                isCritical: CRITICAL_COMPONENTS.has(componentName)
+              },
+              delta: { text: currentContent }
+            });
+          }
+
+          // Update the marker info with the correct position from state
+          markerInfo.metadata.position = finishedState.position || 'main';
+
+          // Send the stop event
+          events.push(markerInfo);
         }
         
-        currentState.currentComponentId = null;
-        currentState.currentComponentName = null;
+        // Reset content buffer
+        currentContent = '';
+        
+        // If this was a nested component, restore the parent component
+        if (currentState.parentComponentId) {
+          currentState.currentComponentId = currentState.parentComponentId;
+          currentState.currentComponentName = currentState.parentComponentName;
+          currentState.parentComponentId = null;
+          currentState.parentComponentName = null;
+        } else {
+          currentState.currentComponentId = null;
+          currentState.currentComponentName = null;
+        }
       }
     } else if (!line.trim().startsWith('///')) {
       // Accumulate non-marker lines
       currentContent += line + '\n';
-      nonMarkerLines.push(line);
     }
   }
 
-  // If we have remaining content and an active component, add it to state
+  // If we have accumulated content and an active component, send it as a delta
   if (currentContent.trim() && currentState.currentComponentId) {
-    const state = componentStates.get(currentState.currentComponentId);
+    const state = this.componentStates.get(currentState.currentComponentId);
     if (state) {
       state.code = (state.code || '') + currentContent;
       state.lastUpdated = Date.now();
-      componentStates.set(currentState.currentComponentId, state);
+      this.componentStates.set(currentState.currentComponentId, state);
+
+      // Send content delta event
+      events.push({
+        type: 'content_block_delta',
+        metadata: {
+          componentId: currentState.currentComponentId,
+          componentName: currentState.currentComponentName,
+          position: state.position || 'main',
+          isCompoundComplete: true,
+          isCritical: CRITICAL_COMPONENTS.has(currentState.currentComponentName)
+        },
+        delta: { text: currentContent }
+      });
     }
   }
 
   return {
     events,
-    remainingContent: nonMarkerLines.join('\n'),
     currentState
   };
 };
@@ -1094,6 +1171,188 @@ const validateCompoundComponent = (componentName, code) => {
   };
 };
 
+class GeneratorState {
+  constructor() {
+    this.componentStates = new Map();
+    this.currentComponentId = null;
+    this.currentComponentName = null;
+    this.lineBuffer = '';
+    this.accumulatedCode = '';
+    this.componentStartTime = null;
+    this.componentBuffer = new ComponentBuffer();
+  }
+
+  updateComponentState(id, updates) {
+    const current = this.componentStates.get(id) || {};
+    const updated = {
+      ...current,
+      ...updates,
+      lastUpdated: Date.now()
+    };
+    this.componentStates.set(id, updated);
+    return updated;
+  }
+
+  processChunkWithMarkers(text, currentState) {
+    const events = [];
+    const lines = text.split('\n');
+    let currentContent = '';
+    
+    for (let line of lines) {
+      // If we have buffered content, prepend it to the current line
+      if (this.lineBuffer) {
+        line = this.lineBuffer + line;
+        this.lineBuffer = '';
+      }
+
+      // Try to process the line as a marker
+      const markerInfo = processMarkerText(line);
+
+      if (markerInfo?.incomplete) {
+        // Store incomplete line in buffer
+        this.lineBuffer = line;
+        continue;
+      }
+
+      if (markerInfo) {
+        // Found a valid marker
+        if (markerInfo.type === 'content_block_start') {
+          // If we have accumulated content before this marker, add it to the current component
+          if (currentContent.trim() && currentState.currentComponentId) {
+            const state = this.componentStates.get(currentState.currentComponentId);
+            if (state) {
+              state.code = (state.code || '') + currentContent;
+              state.lastUpdated = Date.now();
+              this.componentStates.set(currentState.currentComponentId, state);
+
+              // Send content delta event
+              events.push({
+                type: 'content_block_delta',
+                metadata: {
+                  componentId: currentState.currentComponentId,
+                  componentName: currentState.currentComponentName,
+                  position: state.position || 'main',
+                  isCompoundComplete: true,
+                  isCritical: CRITICAL_COMPONENTS.has(currentState.currentComponentName)
+                },
+                delta: { text: currentContent }
+              });
+            }
+          }
+          currentContent = '';
+
+          // Save current component as parent before switching to new component
+          if (currentState.currentComponentId) {
+            currentState.parentComponentId = currentState.currentComponentId;
+            currentState.parentComponentName = currentState.currentComponentName;
+          }
+
+          // Start new component
+          currentState.currentComponentId = markerInfo.metadata.componentId;
+          currentState.currentComponentName = markerInfo.metadata.componentName;
+          
+          // Initialize new component state
+          this.updateComponentState(currentState.currentComponentId, {
+            code: '',
+            position: markerInfo.metadata.position,
+            startTime: Date.now()
+          });
+
+          // Send start event
+          events.push(markerInfo);
+        } else if (markerInfo.type === 'content_block_stop') {
+          const { componentId, componentName } = markerInfo.metadata;
+          
+          // Get the final state of the component
+          const finishedState = this.componentStates.get(componentId);
+          if (finishedState) {
+            // Add any remaining content to the current component before completing it
+            if (currentContent.trim()) {
+              finishedState.code = (finishedState.code || '') + currentContent;
+              finishedState.lastUpdated = Date.now();
+              this.componentStates.set(componentId, finishedState);
+              
+              // Send content delta event for the accumulated content
+              events.push({
+                type: 'content_block_delta',
+                metadata: {
+                  componentId,
+                  componentName,
+                  position: finishedState.position || 'main',
+                  isCompoundComplete: true,
+                  isCritical: CRITICAL_COMPONENTS.has(componentName)
+                },
+                delta: { text: currentContent }
+              });
+            }
+
+            // Update the marker info with the correct position from state
+            markerInfo.metadata.position = finishedState.position || 'main';
+
+            // Send the stop event
+            events.push(markerInfo);
+          }
+          
+          // Reset content buffer
+          currentContent = '';
+          
+          // If this was a nested component, restore the parent component
+          if (currentState.parentComponentId) {
+            currentState.currentComponentId = currentState.parentComponentId;
+            currentState.currentComponentName = currentState.parentComponentName;
+            currentState.parentComponentId = null;
+            currentState.parentComponentName = null;
+          } else {
+            currentState.currentComponentId = null;
+            currentState.currentComponentName = null;
+          }
+        }
+      } else if (!line.trim().startsWith('///')) {
+        // Accumulate non-marker lines
+        currentContent += line + '\n';
+      }
+    }
+
+    // If we have accumulated content and an active component, send it as a delta
+    if (currentContent.trim() && currentState.currentComponentId) {
+      const state = this.componentStates.get(currentState.currentComponentId);
+      if (state) {
+        state.code = (state.code || '') + currentContent;
+        state.lastUpdated = Date.now();
+        this.componentStates.set(currentState.currentComponentId, state);
+
+        // Send content delta event
+        events.push({
+          type: 'content_block_delta',
+          metadata: {
+            componentId: currentState.currentComponentId,
+            componentName: currentState.currentComponentName,
+            position: state.position || 'main',
+            isCompoundComplete: true,
+            isCritical: CRITICAL_COMPONENTS.has(currentState.currentComponentName)
+          },
+          delta: { text: currentContent }
+        });
+      }
+    }
+
+    return {
+      events,
+      currentState
+    };
+  }
+
+  reset() {
+    this.componentStates.clear();
+    this.currentComponentId = null;
+    this.currentComponentName = null;
+    this.lineBuffer = '';
+    this.accumulatedCode = '';
+    this.componentStartTime = null;
+    this.componentBuffer = new ComponentBuffer();
+  }
+}
+
 const generateController = async (req, res) => {
   try {
     // Validate project and version IDs
@@ -1108,6 +1367,9 @@ const generateController = async (req, res) => {
       res.end();
       return;
     }
+
+    // Create state instance for this request
+    const state = new GeneratorState();
 
     // Allow test IDs to bypass database validation
     if (!isTestId(projectId) || !isTestId(versionId)) {
@@ -1131,33 +1393,11 @@ const generateController = async (req, res) => {
     req.on('close', () => {
       log('❌ Client disconnected');
       stream.destroy();
+      state.reset();
       if (!res.writableEnded) {
         res.end();
       }
     });
-
-    // Component state management
-    const componentStates = new Map();
-    let currentComponentId = null;
-    let currentComponentName = null;
-    
-    const updateComponentState = (id, updates) => {
-      const current = componentStates.get(id) || {};
-      const updated = {
-        ...current,
-        ...updates,
-        lastUpdated: Date.now()
-      };
-      componentStates.set(id, updated);
-      return updated;
-    };
-
-    // Function to check for duplicate function declarations
-    const hasDuplicateFunction = (code, functionName) => {
-      const regex = new RegExp(`export\\s+function\\s+${functionName}\\s*\\(`, 'g');
-      const matches = code.match(regex) || [];
-      return matches.length > 1;
-    };
 
     // Handle stream events
     stream.on('data', (chunk) => {
@@ -1165,156 +1405,99 @@ const generateController = async (req, res) => {
         if (!res.writable) {
           log('❌ Response no longer writable');
           stream.destroy();
+          state.reset();
           return;
         }
 
         const data = chunk.toString();
+        log('📥 Received chunk:', data);
         
         try {
           const event = JSON.parse(data);
+          log('🔄 Processing event:', event);
           
           // Process markers in the text content if this is a delta event
           if (event.type === 'content_block_delta' && event.delta?.text) {
-            const { events, remainingContent, currentState } = processChunkWithMarkers(
+            const { events, currentState } = state.processChunkWithMarkers(
               event.delta.text,
-              { currentComponentId, currentComponentName }
+              { 
+                currentComponentId: state.currentComponentId, 
+                currentComponentName: state.currentComponentName
+              }
             );
             
+            log('✨ Processed events:', events);
+            
             // Update component state from processing results
-            currentComponentId = currentState.currentComponentId;
-            currentComponentName = currentState.currentComponentName;
+            state.currentComponentId = currentState.currentComponentId;
+            state.currentComponentName = currentState.currentComponentName;
 
-            // Send all marker and finished component events first
-            for (const markerEvent of events) {
-              // Ensure we're sending the complete code with finished events
-              if (markerEvent.type === 'component_finished') {
-                // Double check the code is clean and complete
-                const state = componentStates.get(markerEvent.metadata.componentId);
-                if (state) {
-                  markerEvent.code = cleanComponentCode(state.code || '');
-                }
-              }
-              
-              // Send the event immediately
-              res.write(`data: ${JSON.stringify(markerEvent)}\n\n`);
-              
-              // Update component states based on marker events
-              if (markerEvent.type === 'content_block_start') {
-                const { componentId, componentName, position } = markerEvent.metadata;
-                updateComponentState(componentId, {
-                  name: componentName,
-                  position,
-                  isStreaming: true,
-                  isComplete: false,
-                  code: '',
-                  startTime: Date.now(),
-                  revision: 1
-                });
-              } else if (markerEvent.type === 'content_block_stop') {
-                const { componentId } = markerEvent.metadata;
-                const state = componentStates.get(componentId);
-                if (state) {
-                  state.isStreaming = false;
-                  state.isComplete = true;
-                  state.lastUpdated = Date.now();
-                  componentStates.set(componentId, state);
-                }
-              }
-            }
-
-            // Only send content event if we have remaining content and a current component
-            if (remainingContent.trim() && currentComponentId) {
-              const cleanedContent = cleanComponentCode(remainingContent);
-              if (cleanedContent) {
-                const contentEvent = {
-                  ...event,
-                  delta: { text: cleanedContent },
-                  metadata: {
-                    componentId: currentComponentId,
-                    componentName: currentComponentName,
-                    isCompoundComplete: true,
-                    isCritical: CRITICAL_COMPONENTS.has(currentComponentName)
-                  }
-                };
-                res.write(`data: ${JSON.stringify(contentEvent)}\n\n`);
-              }
+            // Send all events to the client
+            for (const processedEvent of events) {
+              log('📤 Sending event:', processedEvent);
+              res.write(`data: ${JSON.stringify(processedEvent)}\n\n`);
             }
           } else {
-            // For non-delta events, forward as is
+            // Forward non-delta events directly
+            log('📤 Forwarding event:', event);
             res.write(`data: ${JSON.stringify(event)}\n\n`);
           }
-
-          // Process other event types
-          switch (event.type) {
-            case 'message_start':
-              log('🎬 Message started');
-              // Reset state at the start of a new message
-              lineBuffer = '';
-              currentComponentId = null;
-              currentComponentName = null;
-              componentStates.clear();
-              break;
-
-            case 'message_stop':
-              log('🏁 Message complete');
-              // Handle any buffered content
-              if (lineBuffer) {
-                log('⚠️ Unprocessed content in buffer at message end:', lineBuffer);
-                // Try to process any complete lines from buffer
-                if (currentComponentId) {
-                  const state = componentStates.get(currentComponentId);
-                  if (state && !lineBuffer.trim().startsWith('///')) {
-                    state.code = (state.code || '') + lineBuffer;
-                    state.lastUpdated = Date.now();
-                    componentStates.set(currentComponentId, state);
-                  }
-                }
-              }
-              // Check for any active component and force finish it
-              if (currentComponentId) {
-                const finalState = componentStates.get(currentComponentId);
-                if (finalState) {
-                  const finishedEvent = createFinishedEvent(
-                    currentComponentId,
-                    currentComponentName,
-                    finalState,
-                    'message_end'
-                  );
-                  res.write(`data: ${JSON.stringify(finishedEvent)}\n\n`);
-                }
-              }
-              break;
-          }
-        } catch (error) {
-          log('⚠️ Failed to parse chunk data:', error);
+        } catch (parseError) {
+          log('❌ Error parsing chunk:', parseError);
           res.write(`data: ${JSON.stringify({
             type: 'error',
             code: 'PARSE_ERROR',
-            message: `Failed to parse stream data: ${error.message}`,
-            retryable: false
+            message: 'Failed to parse stream data',
+            error: parseError.message
           })}\n\n`);
+          stream.destroy();
+          state.reset();
         }
-      } catch (error) {
-        log('❌ Error processing chunk:', error);
+      } catch (writeError) {
+        log('❌ Error writing response:', writeError);
+        stream.destroy();
+        state.reset();
       }
     });
 
-    // Wait for stream to end
-    await new Promise((resolve, reject) => {
-      stream.on('end', resolve);
-      stream.on('error', reject);
+    // Handle stream end
+    stream.on('end', () => {
+      log('✅ Stream ended');
+      
+      // Send message_stop event before ending
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({
+          type: 'message_stop'
+        })}\n\n`);
+        res.end();
+      }
+      
+      state.reset();
     });
 
-    // End the response
-    res.end();
+    // Handle stream errors
+    stream.on('error', (error) => {
+      log('❌ Stream error:', error);
+      state.reset();
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          code: 'STREAM_ERROR',
+          message: 'Stream error occurred',
+          error: error.message
+        })}\n\n`);
+        res.end();
+      }
+    });
+
   } catch (error) {
     log('❌ Controller error:', error);
     if (!res.writableEnded) {
       res.write(`data: ${JSON.stringify({
         type: 'error',
         code: 'CONTROLLER_ERROR',
-        message: error.message,
-        retryable: false
+        message: 'Controller error occurred',
+        error: error.message
       })}\n\n`);
       res.end();
     }

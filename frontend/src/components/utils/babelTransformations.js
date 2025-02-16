@@ -359,7 +359,7 @@ function mergeJSXLines(snippet) {
 /**
  * Decide if the current line might need to be merged with the next line.
  */
-function needsMerge(line) {
+export function needsMerge(line) {
   const trimmed = line.trim();
   if (trimmed.startsWith('//')) return false;
   if (!trimmed.includes('<') && !trimmed.includes('{')) return false;
@@ -1194,23 +1194,38 @@ function ensureHeaderTestId(content) {
 /**
  * Cleans and transforms code for use with react-live.
  * This function:
- * 1. Removes import statements
- * 2. Removes export statements
- * 3. Ensures proper render call
- * 4. Handles JSX transformation
+ * 1. Removes import statements for components provided in scope
+ * 2. Removes other import statements
+ * 3. Removes export statements
+ * 4. Ensures proper render call
+ * 5. Handles JSX transformation
  */
 export function cleanCodeForLive(code) {
   if (!code || typeof code !== 'string') return '';
 
   try {
-    // First, clean up the code by removing imports and exports
+    // First, find and extract the first complete component definition
+    const componentBlockPattern = /\/\/\/\s*START\s+([A-Z][A-Za-z0-9]*)\s+position=(\w+)\s*([\s\S]*?)\/\/\/\s*END\s+\1/;
+    const blockMatch = code.match(componentBlockPattern);
+    
+    if (blockMatch) {
+      // Extract just the first complete component definition
+      code = blockMatch[3];
+    }
+
+    // Clean up the code by removing imports and exports
     let cleanedCode = code
-      // Remove import statements but keep track of dependencies
+      // Remove import statements for components we provide in scope
+      .replace(/import\s*{\s*Button\s*}\s*from\s*['"]\.\/ui\/button['"];?\n?/g, '')
+      .replace(/import\s*{\s*cn\s*}\s*from\s*['"]\.\/utils\/cn['"];?\n?/g, '')
+      // Remove other import statements but keep track of dependencies
       .replace(/^import\s+.*?['"]\s*;?\s*$/gm, '')
       // Remove export statements but keep the component
       .replace(/^export\s+(?:default\s+)?/gm, '')
       // Remove any existing render statements
       .replace(/render\s*\([^)]+\);?/g, '')
+      // Remove any const declarations for components we provide in scope
+      .replace(/const\s+Button\s*=\s*UIComponents\.Button;?\n?/g, '')
       // Clean up extra newlines
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -1226,10 +1241,10 @@ export function cleanCodeForLive(code) {
 
     // Find all component references in JSX
     const componentRefs = new Set();
-    const componentPattern = /<([A-Z][a-zA-Z0-9]*)/g;
-    let match;
-    while ((match = componentPattern.exec(cleanedCode)) !== null) {
-      componentRefs.add(match[1]);
+    const jsxComponentPattern = /<([A-Z][a-zA-Z0-9]*)/g;
+    let jsxMatch;
+    while ((jsxMatch = jsxComponentPattern.exec(cleanedCode)) !== null) {
+      componentRefs.add(jsxMatch[1]);
     }
 
     // Transform the code with Babel to handle JSX
@@ -1278,85 +1293,37 @@ export function cleanCodeForLive(code) {
         const cleanedArgs = args.split(',').map(arg => arg.trim()).join(', ');
         return `className: cn(${cleanedArgs})`;
       })
+      // Remove any Button declarations since it's provided in scope
+      .replace(/const\s+Button\s*=\s*UIComponents\.Button;?\n?/g, '')
       // Clean up extra newlines
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    // Add component dependencies to the scope
+    // Add component dependencies to the scope, excluding Button since it's already available
     if (componentRefs.size > 0) {
       const dependencyDeclarations = Array.from(componentRefs)
-        .filter(name => name !== lastComponentName) // Don't include self-reference
+        .filter(name => name !== lastComponentName && name !== 'Button') // Exclude Button and self-reference
         .map(name => {
-          // Special handling for known UI components
-          if (['Button', 'Card'].includes(name)) {
+          // Special handling for known UI components except Button
+          if (['Card'].includes(name)) {
             return `const ${name} = UIComponents.${name};`;
           }
           return `// Component ${name} should be available in scope`;
         })
         .join('\n');
 
-      finalCode = `${dependencyDeclarations}\n\n${finalCode}`;
+      if (dependencyDeclarations) {
+        finalCode = `${dependencyDeclarations}\n\n${finalCode}`;
+      }
     }
 
     // Add the render statement if it doesn't exist
     if (!finalCode.includes('render(')) {
-      finalCode += `\n\nrender(React.createElement(${lastComponentName}, {
-        title: "Sample Product",
-        price: 99.99,
-        description: "A sample product description",
-        image: "https://placekitten.com/400/300"
-      }));`;
+      finalCode += `\n\nrender(React.createElement(${lastComponentName}));`;
     }
 
     return finalCode;
   } catch (error) {
-    // If we get a module error, try again with script mode
-    if (error.code === 'BABEL_PARSE_ERROR' && error.reasonCode === 'ImportOutsideModule') {
-      try {
-        // Remove imports and exports first
-        const strippedCode = code
-          .replace(/^import\s+.*?['"]\s*;?\s*$/gm, '')
-          .replace(/^export\s+(?:default\s+)?/gm, '')
-          .trim();
-
-        // Transform with script mode
-        const transformed = transform(strippedCode, {
-          presets: ['react'],
-          plugins: [
-            ['transform-react-jsx', {
-              useBuiltIns: true,
-              pragma: 'React.createElement',
-              pragmaFrag: 'React.Fragment'
-            }]
-          ],
-          sourceType: 'script',
-          configFile: false,
-          babelrc: false
-        }).code;
-
-        // Clean up and return
-        let finalCode = transformed
-          .replace(/"use strict";\s*/g, '')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
-
-        // Add render statement if needed
-        const componentMatch = finalCode.match(/function\s+([A-Z][A-Za-z0-9]*)/);
-        if (componentMatch && !finalCode.includes('render(')) {
-          finalCode += `\n\nrender(React.createElement(${componentMatch[1]}, {
-            title: "Sample Product",
-            price: 99.99,
-            description: "A sample product description",
-            image: "https://placekitten.com/400/300"
-          }));`;
-        }
-
-        return finalCode;
-      } catch (retryError) {
-        console.error('Error in retry:', retryError);
-      }
-    }
-
     console.error('Error in cleanCodeForLive:', error);
     // Return a safe fallback if the code is invalid
     return `function ErrorComponent() {

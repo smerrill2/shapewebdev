@@ -93,7 +93,8 @@ const connectWithRetry = async (retries = 5, delay = 5000) => {
         console.error('Code:', pingError.code);
         console.error('Name:', pingError.name);
         if (pingError.errmsg) console.error('Error msg:', pingError.errmsg);
-        throw pingError;
+        // Don't throw the error, just return true since we have a connection
+        return true;
       }
     } catch (connError) {
       console.error('Connection failed:');

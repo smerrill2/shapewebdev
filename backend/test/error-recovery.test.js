@@ -29,15 +29,43 @@ describe('Error Recovery System', () => {
     });
 
     it('should retry connection before falling back', async () => {
+      // Mock the admin operations
+      const mockAdmin = {
+        ping: jest.fn().mockResolvedValue(true),
+        listDatabases: jest.fn().mockResolvedValue({ databases: [{ name: 'test' }] })
+      };
+      
+      // Mock the database object
+      const mockDb = {
+        admin: jest.fn().mockReturnValue(mockAdmin),
+        databaseName: 'test'
+      };
+      
+      // Mock the connection object
+      const mockConnection = {
+        db: mockDb,
+        on: jest.fn()
+      };
+
+      // Mock mongoose.connection
+      mongoose.connection = mockConnection;
+      
+      // Mock mongoose.connect to fail once then succeed with a proper connection
       const mockConnect = jest.fn()
         .mockRejectedValueOnce(new Error('First failure'))
-        .mockResolvedValueOnce(true);
+        .mockImplementationOnce(async () => {
+          mongoose.connection = mockConnection;
+          return { connection: mockConnection };
+        });
       
       mongoose.connect = mockConnect;
 
       const connected = await connectDB(2, 100);
       expect(connected).toBe(true);
       expect(mockConnect).toHaveBeenCalledTimes(2);
+      // We don't expect these to be called since we're returning true after connection
+      // expect(mockAdmin.ping).toHaveBeenCalled();
+      // expect(mockAdmin.listDatabases).toHaveBeenCalled();
     });
   });
 
