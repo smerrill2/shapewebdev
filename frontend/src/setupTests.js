@@ -6,16 +6,13 @@ import '@testing-library/jest-dom';
 import { TextEncoder, TextDecoder } from 'util';
 
 // Mock console methods for cleaner test output
-const originalConsole = { ...console };
-beforeAll(() => {
-  console.log = jest.fn();
-  console.warn = jest.fn();
-  console.error = jest.fn();
-});
-
-afterAll(() => {
-  Object.assign(console, originalConsole);
-});
+global.console = {
+  ...console,
+  // Uncomment the following lines to see the warnings and errors in tests
+  // error: jest.fn(),
+  // warn: jest.fn(),
+  // log: jest.fn(),
+};
 
 // Mock IntersectionObserver
 global.IntersectionObserver = class IntersectionObserver {

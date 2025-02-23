@@ -5,7 +5,6 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { NavigationMenu, NavigationMenuList, NavigationMenuItem, NavigationMenuTrigger, NavigationMenuContent, NavigationMenuLink } from './ui/navigation-menu';
 import { Home, Users, DollarSign, TrendingUp, Activity } from 'lucide-react';
 import { cn } from './utils/cn';
-import { extractFunctionDefinitions, cleanCode } from './utils/babelTransformations';
 
 const TEST_PROMPTS = {
   singleComponent: {
@@ -426,657 +425,1069 @@ function ProductShowcase() {
   }
 };
 
-const TEST_STREAM_EVENTS = [];
-
-export default function LivePreviewTestPage() {
-  const [registry, setRegistry] = useState({
-    components: new Map(),
-    layout: { sections: { header: [], main: [], footer: [] } }
-  });
-  const [streamingStates, setStreamingStates] = useState(new Map());
-  const [selectedTest, setSelectedTest] = useState('singleComponent');
-  const [events, setEvents] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [selectedComponent, setSelectedComponent] = useState(null);
-
-  // Add a buffer to store code chunks
-  const [codeBuffer, setCodeBuffer] = useState(new Map());
-
-  // Update simulateTestStream to handle events directly
-  const simulateTestStream = async () => {
-    setIsLoading(true);
-    try {
-      // Reset states
-      setRegistry({
-        components: new Map(),
-        layout: { sections: { header: [], main: [], footer: [] } }
-      });
-      setStreamingStates(new Map());
-      setError(null);
-
-      // Simulate stream with delays
-      for (const event of TEST_STREAM_EVENTS) {
-        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between events
-        
-        // Handle events directly based on type
-        switch (event.type) {
-          case 'content_block_start':
-            processComponentStart(event);
-            break;
-          case 'content_block_delta':
-            processComponentDelta(event);
-            break;
-          case 'content_block_stop':
-            processComponentStop(event);
-            break;
-          case 'message_stop':
-            // Handle message stop
-            setStreamingStates(prev => {
-              const next = new Map(prev);
-              Array.from(prev.keys()).forEach(id => {
-                next.set(id, { 
-                  isStreaming: false, 
-                  isComplete: true,
-                  error: null 
-                });
-              });
-              return next;
-            });
-            break;
-          default:
-            console.warn('Unknown event type:', event.type);
-        }
+// Test stream scenarios
+const TEST_STREAMS = {
+  // Simple button component stream
+  simpleButton: [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_simple_button',
+        model: 'claude-3-haiku-20240307',
+        role: 'assistant',
+        content: []
       }
-    } catch (err) {
-      setError(err.message);
-      console.error('Error in test stream:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Debug logging for state changes
-  useEffect(() => {
-    console.log('📊 LivePreviewTestPage State:', {
-      registrySize: registry?.components?.size,
-      streamingStatesSize: streamingStates?.size,
-      registry: registry?.components ? Object.fromEntries(registry.components) : null,
-      streamingStates: streamingStates ? Object.fromEntries(streamingStates) : null
-    });
-  }, [registry, streamingStates]);
-
-  // Add test project and version IDs
-  const TEST_PROJECT_ID = 'test-project-1';
-  const TEST_VERSION_ID = 'test-version-1';
-
-  // Remove unused validation helper
-  const validateCode = (code) => {
-    // Remove import statements
-    code = code.replace(/^import\s+.*?['"]\s*;?\s*$/gm, '');
-    
-    // Remove export statements but keep the component definition
-    code = code.replace(/^export\s+default\s+/gm, '');
-    code = code.replace(/^export\s+/gm, '');
-    
-    // Ensure proper JSX tag closure
-    const openTags = (code.match(/</g) || []).length;
-    const closeTags = (code.match(/>/g) || []).length;
-    
-    // Basic validation
-    if (openTags !== closeTags) {
-      code = code.replace(/[^}]*$/, ''); // Remove incomplete JSX
-    }
-
-    return code;
-  };
-
-  // Process component start event with batched updates
-  const processComponentStart = (event) => {
-    // Enhanced validation and logging
-    console.group('🎬 Processing Component Start');
-    console.log('Event:', {
-      type: event.type,
-      metadata: event.metadata,
-      raw: event,
-      timestamp: new Date().toISOString()
-    });
-
-    // Validate event structure with detailed logging
-    if (!event?.metadata?.componentId || !event?.metadata?.componentName) {
-      console.error('⚠️ Invalid component_start event - missing required fields:', {
-        hasComponentId: Boolean(event?.metadata?.componentId),
-        hasComponentName: Boolean(event?.metadata?.componentName),
-        metadata: event?.metadata
-      });
-      console.groupEnd();
-      return;
-    }
-
-    const componentId = event.metadata.componentId;
-    // Ensure we get the full component name and validate it
-    const componentName = event.metadata.componentName.trim();
-    const position = event.metadata.position || 'main';
-
-    if (componentName.length <= 1) {
-      console.warn('⚠️ Suspicious component name (too short):', {
-        componentName,
-        componentId,
-        position
-      });
-    }
-
-    console.log('📦 Creating Component:', {
-      componentId,
-      componentName,
-      position,
-      rawName: event.metadata.componentName,
-      fullMetadata: event.metadata,
-      timestamp: new Date().toISOString(),
-      nameLength: componentName.length,
-      hasSpaces: componentName.includes(' '),
-      nameFirstChar: componentName.charAt(0),
-      nameValidation: /^[A-Z][a-zA-Z0-9]*$/.test(componentName)
-    });
-    
-    // Update registry and streaming states atomically
-    setRegistry(prevRegistry => {
-      const newComponents = new Map(prevRegistry.components);
-      const displayName = componentName.replace(/([A-Z])/g, ' $1').trim();
-      
-      console.log('🏷️ Component Names:', {
-        original: componentName,
-        display: displayName,
-        id: componentId,
-        existingComponents: Array.from(prevRegistry.components.keys())
-      });
-
-      newComponents.set(componentId, {
-        name: componentName,
-        displayName,
-        code: '',
-        isLayout: componentId === 'root_layout',
-        position
-      });
-      return { ...prevRegistry, components: newComponents };
-    });
-
-    setStreamingStates(prevStates => {
-      const newStates = new Map(prevStates);
-      newStates.set(componentId, {
-        isStreaming: true,
-        isComplete: false,
-        error: null,
-        startTime: Date.now(),
-        componentName // Store the component name for debugging
-      });
-      return newStates;
-    });
-
-    // Dispatch stream_start event for SimpleLivePreview
-    window.dispatchEvent(new CustomEvent('stream_start', {
-      detail: {
-        ...event,
-        metadata: {
-          ...event.metadata,
-          debug: {
-            originalName: event.metadata.componentName,
-            processedName: componentName,
-            timestamp: Date.now()
-          }
-        }
+    },
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_button',
+        componentName: 'SimpleButton',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
       }
-    }));
-    
-    console.groupEnd();
-  };
-
-  // Process component delta processing - handle partial declarations
-  const processComponentDelta = (event) => {
-    console.group('📝 Processing Component Delta');
-    
-    // Validate event structure with detailed logging
-    if (!event?.metadata?.componentId || !event?.delta?.text) {
-      console.error('⚠️ Invalid component_delta event:', {
-        hasComponentId: Boolean(event?.metadata?.componentId),
-        hasText: Boolean(event?.delta?.text),
-        event
-      });
-      console.groupEnd();
-      return;
-    }
-
-    const componentId = event.metadata.componentId;
-    const componentName = event.metadata.componentName?.trim();
-    const position = event.metadata.position || 'main';
-    const deltaText = event.delta.text;
-
-    // Update code buffer first
-    setCodeBuffer(prev => {
-      const next = new Map(prev);
-      const currentBuffer = next.get(componentId) || '';
-      next.set(componentId, currentBuffer + deltaText);
-      return next;
-    });
-
-    // Update streaming state
-    setStreamingStates(prevStates => {
-      const newStates = new Map(prevStates);
-      const currentState = newStates.get(componentId) || {
-        isStreaming: true,
-        isComplete: false,
-        error: null,
-        startTime: Date.now(),
-        componentName,
-        receivedDeltas: 0
-      };
-      
-      newStates.set(componentId, {
-        ...currentState,
-        isStreaming: true,
-        error: null,
-        receivedDeltas: (currentState.receivedDeltas || 0) + 1,
-        lastDeltaTime: Date.now()
-      });
-      
-      return newStates;
-    });
-
-    window.dispatchEvent(new CustomEvent('stream_delta', {
-      detail: {
-        ...event,
-        metadata: {
-          ...event.metadata,
-          debug: {
-            hasStartMarker: deltaText.includes('/// START'),
-            hasEndMarker: deltaText.includes('/// END'),
-            textLength: deltaText.length,
-            timestamp: Date.now(),
-            componentName
-          }
-        }
-      }
-    }));
-
-    console.groupEnd();
-  };
-
-  // Add processComponentStop handler
-  const processComponentStop = (event) => {
-    const { componentId, componentName, position } = event.metadata;
-    if (!componentId) return;
-
-    // Check if we have buffered code for this component
-    setCodeBuffer(prev => {
-      const bufferedCode = prev.get(componentId);
-      if (bufferedCode) {
-        // Clean the buffered code before setting it in the registry
-        const cleanBufferedCode = bufferedCode.split('\n').filter(line => !line.trim().startsWith('///')).join('\n');
-        setRegistry(prevRegistry => {
-          const newComponents = new Map(prevRegistry.components);
-          newComponents.set(componentId, {
-            name: componentName || `Component_${componentId}`,
-            displayName: (componentName || `Component ${componentId}`).replace(/([A-Z])/g, ' $1').trim(),
-            code: cleanBufferedCode,
-            isLayout: componentId === 'root_layout',
-            position: position || 'main'
-          });
-          return { ...prevRegistry, components: newComponents };
-        });
-
-        // Clear the buffer for this component
-        const next = new Map(prev);
-        next.delete(componentId);
-        return next;
-      }
-      return prev;
-    });
-
-    // Update streaming state to complete
-    setStreamingStates(prev => {
-      const next = new Map(prev);
-      next.set(componentId, {
-        isStreaming: false,
-        isComplete: true,
-        error: null
-      });
-      return next;
-    });
-  };
-
-  // Simplify runTest to just handle events
-  const runTest = async (testCase) => {
-    setIsLoading(true);
-    setEvents([]);
-    setError(null);
-    
-    // Initialize clean states
-    const initialRegistry = {
-      components: new Map(),
-      layout: { sections: { header: [], main: [], footer: [] } }
-    };
-    const initialStreamingStates = new Map();
-    
-    setRegistry(initialRegistry);
-    setStreamingStates(initialStreamingStates);
-
-    // Wait for state updates to complete
-    await new Promise(resolve => setTimeout(resolve, 0));
-
-    try {
-      const requestUrl = `http://localhost:5001/api/generate?projectId=${TEST_PROJECT_ID}&versionId=${TEST_VERSION_ID}`;
-      const requestBody = TEST_PROMPTS[testCase];
-      
-      const response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP Error: ${response.status}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      // Keep loading true until we receive the first event
-      let receivedFirstEvent = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim() || !line.startsWith('data: ')) continue;
-          
-          try {
-            const event = JSON.parse(line.slice(5));
-            
-            // Set loading to false after receiving first valid event
-            if (!receivedFirstEvent) {
-              receivedFirstEvent = true;
-              setIsLoading(false);
-            }
-            
-            if (event.type === 'error') {
-              setError(event.message || 'Unknown stream error');
-              continue;
-            }
-            
-            // Process events in order
-            switch (event.type) {
-              case 'content_block_start':
-                processComponentStart(event);
-                break;
-
-              case 'content_block_delta':
-                processComponentDelta(event);
-                break;
-
-              case 'content_block_stop':
-                processComponentStop(event);
-                break;
-
-              case 'message_stop':
-                window.dispatchEvent(new CustomEvent('message_stop', {
-                  detail: event
-                }));
-                break;
-
-              default:
-                console.warn('⚠️ Unknown event type:', event.type);
-            }
-          } catch (error) {
-            console.error('❌ Failed to parse SSE data:', error);
-            setError(`Failed to parse stream data: ${error.message}`);
-          }
-        }
-      }
-
-    } catch (error) {
-      console.error('❌ Test error:', error);
-      setError(error.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Update createComponentEvents to match generateController.js format
-  const createComponentEvents = (componentId, componentName, position, code) => {
-    // Add markers if they don't exist
-    if (!code.includes('/// START')) {
-      code = `/// START ${componentName} position=${position}\n${code}\n/// END ${componentName}`;
-    }
-
-    const chunkSize = 100;
-    const chunks = [];
-    for (let i = 0; i < code.length; i += chunkSize) {
-      chunks.push(code.slice(i, i + chunkSize));
-    }
-
-    // Check if this is a compound component
-    const isCompound = COMPOUND_COMPONENTS[componentName];
-    const isCompoundComplete = isCompound ? 
-      Object.values(COMPOUND_COMPONENTS[componentName].subcomponentPatterns)
-        .every(pattern => pattern.test(code)) : 
-      true;
-
-    return [
-      {
-        type: 'content_block_start',
-        metadata: { 
-          componentId, 
-          componentName, 
-          position,
-          isCompoundComplete,
-          isCritical: CRITICAL_COMPONENTS.has(componentName)
-        }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_button',
+        componentName: 'SimpleButton',
+        position: 'main'
       },
-      ...chunks.map(chunk => ({
-        type: 'content_block_delta',
-        metadata: { 
-          componentId,
-          componentName,
-          position,
-          isCompoundComplete
-        },
-        delta: { text: chunk }
-      })),
-      {
-        type: 'content_block_stop',
-        metadata: { 
-          componentId, 
-          isComplete: true,
-          componentName,
-          position,
-          isCompoundComplete,
-          sections: {
-            header: position === 'header' ? [componentId] : [],
-            main: position === 'main' ? [componentId] : [],
-            footer: position === 'footer' ? [componentId] : []
-          }
-        }
+      delta: {
+        text: `/// START SimpleButton position=main
+import React from 'react';
+import { Button } from './ui/button';
+import { cn } from '../lib/utils';
+
+export function SimpleButton() {
+  const [count, setCount] = React.useState(0);
+  
+  return (
+    <div className="p-4 space-y-4">
+      <h2 className="text-lg font-semibold">Simple Button Test</h2>
+      <div className="flex items-center gap-4">
+        <Button 
+          onClick={() => setCount(prev => prev + 1)}
+          className={cn(
+            "transition-all",
+            count > 5 && "bg-green-500 hover:bg-green-600"
+          )}
+        >
+          Clicked {count} times
+        </Button>
+        <Button 
+          variant="outline" 
+          onClick={() => setCount(0)}
+        >
+          Reset
+        </Button>
+      </div>
+    </div>
+  );
+}
+/// END SimpleButton`
       }
-    ];
-  };
-
-  // Update injectComponent to use the new format
-  const injectComponent = async (componentId, componentName, position, code) => {
-    const events = createComponentEvents(componentId, componentName, position, code);
-    
-    for (const event of events) {
-      switch (event.type) {
-        case 'content_block_start':
-          processComponentStart(event);
-          break;
-        case 'content_block_delta':
-          processComponentDelta(event);
-          break;
-        case 'content_block_stop':
-          processComponentStop(event);
-          break;
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_button',
+        componentName: 'SimpleButton',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
       }
-      // Small delay between chunks to simulate streaming
-      await new Promise(resolve => setTimeout(resolve, 50));
+    },
+    {
+      type: 'message_stop'
     }
-  };
+  ],
 
-  // Update injectAllSequential to handle dependencies properly
-  const injectAllSequential = async () => {
-    // Clear existing components and states
-    const initialRegistry = {
-      components: new Map(),
-      layout: { sections: { header: [], main: [], footer: [] } }
-    };
-    const initialStates = new Map();
-    
-    setRegistry(initialRegistry);
-    setStreamingStates(initialStates);
+  // Complex dashboard stream
+  dashboard: [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_dashboard',
+        model: 'claude-3-haiku-20240307',
+        role: 'assistant',
+        content: []
+      }
+    },
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_dashboard',
+        componentName: 'InteractiveDashboard',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_dashboard',
+        componentName: 'InteractiveDashboard',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START InteractiveDashboard position=main
+import React from 'react';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import { Button } from './ui/button';
+import { Users, DollarSign, TrendingUp, Activity } from 'lucide-react';
+import { cn } from '../lib/utils';
 
-    // Wait for state updates to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    try {
-      // Inject components in order of dependencies
-      console.log('Injecting PriceTag...');
-      await injectComponent('comp_pricetag', 'PriceTag', 'main', TEST_COMPONENTS.priceTag.code);
-      // Longer delay after PriceTag to ensure it's fully processed
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      console.log('Injecting ProductCard...');
-      await injectComponent('comp_productcard', 'ProductCard', 'main', TEST_COMPONENTS.productCard.code);
-      // Longer delay after ProductCard to ensure it's fully processed
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      console.log('Injecting ProductShowcase...');
-      await injectComponent('comp_productshowcase', 'ProductShowcase', 'main', TEST_COMPONENTS.productShowcase.code);
-      // Wait for the last component to be processed
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Send the final message_stop event
-      window.dispatchEvent(new CustomEvent('message_stop', {
-        detail: { type: 'message_stop' }
-      }));
-
-      // Update the registry sections
-      setRegistry(prev => ({
-        ...prev,
-        layout: {
-          sections: {
-            header: [],
-            main: ['comp_pricetag', 'comp_productcard', 'comp_productshowcase'],
-            footer: []
-          }
-        }
-      }));
-
-    } catch (error) {
-      console.error('Error during sequential injection:', error);
-      setError(error.message);
-    }
+export function InteractiveDashboard() {
+  const [activeTab, setActiveTab] = React.useState('overview');
+  
+  const data = {
+    users: { total: 2478, trend: '+12%', description: 'Active users this month' },
+    revenue: { total: '$45,231', trend: '+8%', description: 'Revenue this quarter' },
+    growth: { total: '23%', trend: '+2.5%', description: 'Growth rate year over year' },
+    engagement: { total: '87%', trend: '+5%', description: 'Average engagement score' }
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0B1121]">
-      <div className="flex-none p-4 border-b border-slate-700">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-2xl font-bold text-white mb-4">Live Preview Test Page</h1>
-          <div className="flex gap-4 items-center flex-wrap">
-            {/* Add Test Stream Button */}
-            <Button
-              onClick={simulateTestStream}
-              className="bg-green-600 hover:bg-green-700 text-white"
-              disabled={isLoading}
-            >
-              Run Test Stream
-            </Button>
-
-            <div className="h-8 border-r border-slate-600" />
-            
-            {/* Existing test buttons */}
-            {Object.keys(TEST_PROMPTS).map(testKey => (
-              <button
-                key={testKey}
-                onClick={() => setSelectedTest(testKey)}
-                className={cn(
-                  "px-4 py-2 rounded-lg transition-colors",
-                  selectedTest === testKey
-                    ? "bg-purple-600 text-white"
-                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                )}
-              >
-                {testKey}
-              </button>
-            ))}
-            
-            <button
-              onClick={() => runTest(selectedTest)}
-              disabled={isLoading}
-              className={cn(
-                "px-4 py-2 rounded-lg transition-colors ml-auto",
-                isLoading
-                  ? "bg-slate-700 text-slate-400 cursor-not-allowed"
-                  : "bg-green-600 text-white hover:bg-green-700"
-              )}
-            >
-              {isLoading ? 'Generating...' : 'Generate'}
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-7xl mx-auto p-4">
-          <div className="bg-slate-800/50 backdrop-blur rounded-lg overflow-hidden shadow-xl">
-            <SimpleLivePreview
-              registry={registry}
-              streamingStates={streamingStates}
-              setStreamingStates={setStreamingStates}
-              onShowCode={setSelectedComponent}
-            />
-          </div>
-
-          {/* Code Display Section */}
-          {selectedComponent && (
-            <div className="mt-8 p-4 bg-slate-900/50 rounded-lg">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-medium text-white">
-                  {selectedComponent.name} Code
-                </h2>
-                <button
-                  onClick={() => setSelectedComponent(null)}
-                  className="text-slate-400 hover:text-slate-300"
-                >
-                  Close
-                </button>
-              </div>
-              <pre className="text-sm bg-slate-900 p-4 rounded overflow-auto max-h-[500px]">
-                <code className="text-slate-300">{selectedComponent.code}</code>
-              </pre>
-              <div className="mt-4 text-sm text-slate-400">
-                <p>Position: {selectedComponent.position}</p>
-                <p>Layout: {selectedComponent.isLayout ? 'Yes' : 'No'}</p>
-              </div>
+    <div className="space-y-8">
+      {/* Metric Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Users Card */}
+        <Card>
+          <CardHeader className="space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Users</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center space-x-2">
+              <Users className="w-4 h-4 text-muted-foreground" />
+              <div className="text-2xl font-bold">{data.users.total}</div>
+              <span className="text-green-500 text-sm">{data.users.trend}</span>
             </div>
-          )}
-        </div>
+            <p className="text-xs text-muted-foreground">{data.users.description}</p>
+          </CardContent>
+        </Card>
+
+        {/* Revenue Card */}
+        <Card>
+          <CardHeader className="space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Revenue</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center space-x-2">
+              <DollarSign className="w-4 h-4 text-muted-foreground" />
+              <div className="text-2xl font-bold">{data.revenue.total}</div>
+              <span className="text-green-500 text-sm">{data.revenue.trend}</span>
+            </div>
+            <p className="text-xs text-muted-foreground">{data.revenue.description}</p>
+          </CardContent>
+        </Card>
+
+        {/* Growth Card */}
+        <Card>
+          <CardHeader className="space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Growth</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center space-x-2">
+              <TrendingUp className="w-4 h-4 text-muted-foreground" />
+              <div className="text-2xl font-bold">{data.growth.total}</div>
+              <span className="text-green-500 text-sm">{data.growth.trend}</span>
+            </div>
+            <p className="text-xs text-muted-foreground">{data.growth.description}</p>
+          </CardContent>
+        </Card>
+
+        {/* Engagement Card */}
+        <Card>
+          <CardHeader className="space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Engagement</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center space-x-2">
+              <Activity className="w-4 h-4 text-muted-foreground" />
+              <div className="text-2xl font-bold">{data.engagement.total}</div>
+              <span className="text-green-500 text-sm">{data.engagement.trend}</span>
+            </div>
+            <p className="text-xs text-muted-foreground">{data.engagement.description}</p>
+          </CardContent>
+        </Card>
       </div>
-      
-      {error && (
-        <div className="fixed bottom-4 right-4 bg-red-500/10 border border-red-500 text-red-500 p-4 rounded-lg">
-          {error}
-        </div>
-      )}
+
+      {/* Tab Navigation */}
+      <div className="flex space-x-2">
+        {['overview', 'analytics', 'reports', 'notifications'].map((tab) => (
+          <Button
+            key={tab}
+            variant={activeTab === tab ? 'default' : 'outline'}
+            onClick={() => setActiveTab(tab)}
+            className={cn(
+              'capitalize',
+              activeTab === tab && 'bg-primary text-primary-foreground'
+            )}
+          >
+            {tab}
+          </Button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div className="p-4 border rounded-lg">
+        {activeTab === 'overview' && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Overview</h3>
+            <p>View a summary of your dashboard metrics and key performance indicators.</p>
+          </div>
+        )}
+        {activeTab === 'analytics' && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Analytics</h3>
+            <p>Detailed analytics and data visualization of your metrics.</p>
+          </div>
+        )}
+        {activeTab === 'reports' && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Reports</h3>
+            <p>Generate and view reports based on your dashboard data.</p>
+          </div>
+        )}
+        {activeTab === 'notifications' && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Notifications</h3>
+            <p>View and manage your dashboard notifications and alerts.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
-} 
+}
+/// END InteractiveDashboard`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_dashboard',
+        componentName: 'InteractiveDashboard',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'message_stop'
+    }
+  ],
+
+  // Stream with syntax error
+  syntaxError: [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_error',
+        model: 'claude-3-haiku-20240307',
+        role: 'assistant',
+        content: []
+      }
+    },
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_error',
+        componentName: 'ErrorComponent',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_error',
+        componentName: 'ErrorComponent',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START ErrorComponent position=main
+import React from 'react';
+import { Button } from './ui/button';
+
+export function ErrorComponent() {
+  const [count, setCount] = React.useState(0);
+  
+  return (
+    <div className="p-4">
+      <h2 className="text-lg font-semibold">Error Test</h2>
+      {/* Syntax error: missing closing tag */}
+      <div className="flex items-center gap-4">
+        <Button onClick={() => setCount(prev => prev + 1)>
+          Count: {count}
+        </Button>
+      </div>
+    </div>
+  );
+}
+/// END ErrorComponent`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_error',
+        componentName: 'ErrorComponent',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'message_stop'
+    }
+  ],
+
+  // Multiple components stream
+  multiComponent: [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_multi',
+        model: 'claude-3-haiku-20240307',
+        role: 'assistant',
+        content: []
+      }
+    },
+    // Header component
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_header',
+        componentName: 'Header',
+        position: 'header',
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_header',
+        componentName: 'Header',
+        position: 'header'
+      },
+      delta: {
+        text: `/// START Header position=header
+import React from 'react';
+import { Button } from './ui/button';
+
+export function Header() {
+  return (
+    <header className="border-b p-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Multi-Component Test</h1>
+        <Button variant="outline">Menu</Button>
+      </div>
+    </header>
+  );
+}
+/// END Header`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_header',
+        componentName: 'Header',
+        position: 'header',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    // Content component
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_content',
+        componentName: 'Content',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_content',
+        componentName: 'Content',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START Content position=main
+import React from 'react';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+
+export function Content() {
+  return (
+    <div className="p-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Section 1</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>This is the first section of content.</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Section 2</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>This is the second section of content.</p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+/// END Content`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_content',
+        componentName: 'Content',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'message_stop'
+    }
+  ],
+
+  // Add new landing page stream
+  landingPage: [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_landing',
+        model: 'claude-3-haiku-20240307',
+        role: 'assistant',
+        content: []
+      }
+    },
+    // Navbar Component
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_navbar',
+        componentName: 'Navbar',
+        position: 'header',
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_navbar',
+        componentName: 'Navbar',
+        position: 'header'
+      },
+      delta: {
+        text: `/// START Navbar position=header
+import React from 'react';
+import { Button } from './ui/button';
+import { NavigationMenu, NavigationMenuList, NavigationMenuItem, NavigationMenuLink } from './ui/navigation-menu';
+import { cn } from '../lib/utils';
+
+export function Navbar() {
+  return (
+    <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="container flex h-14 items-center">
+        <div className="mr-4 flex">
+          <a href="/" className="mr-6 flex items-center space-x-2">
+            <span className="font-bold text-xl">SuperApp</span>
+          </a>
+        </div>
+        <NavigationMenu>
+          <NavigationMenuList>
+            <NavigationMenuItem>
+              <NavigationMenuLink href="#features">Features</NavigationMenuLink>
+            </NavigationMenuItem>
+            <NavigationMenuItem>
+              <NavigationMenuLink href="#pricing">Pricing</NavigationMenuLink>
+            </NavigationMenuItem>
+            <NavigationMenuItem>
+              <NavigationMenuLink href="#testimonials">Testimonials</NavigationMenuLink>
+            </NavigationMenuItem>
+          </NavigationMenuList>
+        </NavigationMenu>
+        <div className="ml-auto flex items-center space-x-4">
+          <Button variant="ghost">Log in</Button>
+          <Button>Sign up</Button>
+        </div>
+      </div>
+    </header>
+  );
+}
+/// END Navbar`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_navbar',
+        componentName: 'Navbar',
+        position: 'header',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    // Hero Section
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_herosection',
+        componentName: 'HeroSection',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_herosection',
+        componentName: 'HeroSection',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START HeroSection position=main
+import React from 'react';
+import { Button } from './ui/button';
+import { Placeholder } from './ui/placeholder';
+import { cn } from '../lib/utils';
+
+export function HeroSection() {
+  return (
+    <div className="relative">
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 via-transparent to-blue-500/20 z-0" />
+      <div className="container relative z-10 py-24 md:py-32">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+          <div className="space-y-6">
+            <h1 className="text-4xl md:text-6xl font-bold tracking-tight animate-fade-up">
+              Transform Your Workflow with SuperApp
+            </h1>
+            <p className="text-xl text-muted-foreground animate-fade-up [animation-delay:200ms]">
+              Boost productivity and streamline your processes with our all-in-one platform.
+              Experience the future of work today.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4 animate-fade-up [animation-delay:400ms]">
+              <Button size="lg" className="bg-gradient-to-r from-purple-600 to-blue-600">
+                Get Started Free
+              </Button>
+              <Button size="lg" variant="outline">
+                Watch Demo
+              </Button>
+            </div>
+            <div className="pt-4 animate-fade-up [animation-delay:600ms]">
+              <p className="text-sm text-muted-foreground">
+                🚀 Trusted by over 10,000+ companies worldwide
+              </p>
+            </div>
+          </div>
+          <div className="relative animate-fade-left [animation-delay:800ms]">
+            <div className="absolute -inset-4 bg-gradient-to-br from-purple-500 to-blue-500 opacity-20 blur-2xl rounded-xl" />
+            <div className="relative">
+              <Placeholder.Image
+                width="600px"
+                height="400px"
+                label="Dashboard Preview"
+                className="rounded-lg shadow-2xl"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+/// END HeroSection`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_herosection',
+        componentName: 'HeroSection',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    // Features Section
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_featuressection',
+        componentName: 'FeaturesSection',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_featuressection',
+        componentName: 'FeaturesSection',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START FeaturesSection position=main
+import React from 'react';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
+import { Icons } from './ui/icons';
+import { cn } from '../lib/utils';
+
+export function FeaturesSection() {
+  const features = [
+    {
+      icon: <Icons.Zap className="w-6 h-6" />,
+      title: "Lightning Fast",
+      description: "Experience blazing fast performance with our optimized platform."
+    },
+    {
+      icon: <Icons.Shield className="w-6 h-6" />,
+      title: "Enterprise Security",
+      description: "Bank-grade security to keep your data safe and protected."
+    },
+    {
+      icon: <Icons.Sparkles className="w-6 h-6" />,
+      title: "AI-Powered",
+      description: "Smart automation and insights powered by cutting-edge AI."
+    },
+    {
+      icon: <Icons.Users className="w-6 h-6" />,
+      title: "Team Collaboration",
+      description: "Work together seamlessly with real-time collaboration tools."
+    }
+  ];
+
+  return (
+    <section id="features" className="py-24 bg-slate-50 dark:bg-slate-900">
+      <div className="container">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl font-bold mb-4">
+            Packed with Powerful Features
+          </h2>
+          <p className="text-lg text-muted-foreground">
+            Everything you need to take your productivity to the next level.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+          {features.map((feature, index) => (
+            <Card key={index} className="relative overflow-hidden group">
+              <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <CardHeader className="relative">
+                <div className="mb-4 inline-block p-3 rounded-lg bg-primary/10 text-primary">
+                  {feature.icon}
+                </div>
+                <CardTitle>{feature.title}</CardTitle>
+                <CardDescription>{feature.description}</CardDescription>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+/// END FeaturesSection`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_featuressection',
+        componentName: 'FeaturesSection',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    // Testimonials Section
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_testimonialssection',
+        componentName: 'TestimonialsSection',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_testimonialssection',
+        componentName: 'TestimonialsSection',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START TestimonialsSection position=main
+import React from 'react';
+import { Card, CardContent } from './ui/card';
+import { Placeholder } from './ui/placeholder';
+import { Icons } from './ui/icons';
+import { cn } from '../lib/utils';
+
+export function TestimonialsSection() {
+  const testimonials = [
+    {
+      quote: "SuperApp has completely transformed how our team works. The productivity gains are incredible!",
+      author: "Sarah Johnson",
+      role: "CEO at TechCorp",
+      rating: 5
+    },
+    {
+      quote: "The AI features are mind-blowing. It's like having a personal assistant that never sleeps.",
+      author: "Michael Chen",
+      role: "Product Manager at InnovateCo",
+      rating: 5
+    },
+    {
+      quote: "Best investment we've made this year. The ROI was visible within the first month.",
+      author: "Emma Williams",
+      role: "Director at GrowthLabs",
+      rating: 5
+    }
+  ];
+
+  return (
+    <section id="testimonials" className="py-24">
+      <div className="container">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl font-bold mb-4">
+            Loved by Teams Worldwide
+          </h2>
+          <p className="text-lg text-muted-foreground">
+            Don't just take our word for it. Here's what our customers have to say.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {testimonials.map((testimonial, index) => (
+            <Card key={index} className="relative">
+              <CardContent className="pt-6">
+                <div className="absolute -top-4 left-6">
+                  <div className="inline-block p-3 rounded-xl bg-primary text-primary-foreground">
+                    <Icons.Quote className="w-6 h-6" />
+                  </div>
+                </div>
+                <div className="mb-4 flex">
+                  {Array(testimonial.rating).fill(null).map((_, i) => (
+                    <Icons.Star key={i} className="w-5 h-5 text-yellow-500" />
+                  ))}
+                </div>
+                <blockquote className="text-lg mb-6">
+                  "{testimonial.quote}"
+                </blockquote>
+                <div className="flex items-center gap-4">
+                  <Placeholder.Avatar size="48px" label={testimonial.author} />
+                  <div>
+                    <div className="font-semibold">{testimonial.author}</div>
+                    <div className="text-sm text-muted-foreground">{testimonial.role}</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+/// END TestimonialsSection`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_testimonialssection',
+        componentName: 'TestimonialsSection',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    // CTA Section
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_ctasection',
+        componentName: 'CTASection',
+        position: 'main',
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_ctasection',
+        componentName: 'CTASection',
+        position: 'main'
+      },
+      delta: {
+        text: `/// START CTASection position=main
+import React from 'react';
+import { Button } from './ui/button';
+import { cn } from '../lib/utils';
+
+export function CTASection() {
+  return (
+    <section className="py-24 relative overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-500/30 via-transparent to-blue-500/30 z-0" />
+      <div className="container relative z-10">
+        <div className="max-w-4xl mx-auto text-center">
+          <h2 className="text-4xl font-bold mb-6 animate-fade-up">
+            Ready to Transform Your Workflow?
+          </h2>
+          <p className="text-xl text-muted-foreground mb-8 animate-fade-up [animation-delay:200ms]">
+            Join thousands of satisfied teams who have already made the switch.
+            Start your free trial today.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center animate-fade-up [animation-delay:400ms]">
+            <Button size="lg" className="bg-gradient-to-r from-purple-600 to-blue-600">
+              Start Free Trial
+            </Button>
+            <Button size="lg" variant="outline">
+              Schedule Demo
+            </Button>
+          </div>
+          <p className="mt-6 text-sm text-muted-foreground animate-fade-up [animation-delay:600ms]">
+            No credit card required • 14-day free trial • Cancel anytime
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+/// END CTASection`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_ctasection',
+        componentName: 'CTASection',
+        position: 'main',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: false
+      }
+    },
+    // Footer
+    {
+      type: 'content_block_start',
+      metadata: {
+        componentId: 'comp_footer',
+        componentName: 'Footer',
+        position: 'footer',
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    {
+      type: 'content_block_delta',
+      metadata: {
+        componentId: 'comp_footer',
+        componentName: 'Footer',
+        position: 'footer'
+      },
+      delta: {
+        text: `/// START Footer position=footer
+import React from 'react';
+import { Icons } from './ui/icons';
+
+export function Footer() {
+  return (
+    <footer className="border-t py-12 bg-slate-50 dark:bg-slate-900">
+      <div className="container">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          <div>
+            <h3 className="font-semibold mb-4">Product</h3>
+            <ul className="space-y-2">
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Features</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Pricing</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Testimonials</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">FAQ</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-semibold mb-4">Company</h3>
+            <ul className="space-y-2">
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">About</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Blog</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Careers</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Contact</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-semibold mb-4">Resources</h3>
+            <ul className="space-y-2">
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Documentation</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Help Center</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">API Reference</a></li>
+              <li><a href="#" className="text-muted-foreground hover:text-foreground">Status</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-semibold mb-4">Connect</h3>
+            <div className="flex space-x-4">
+              <a href="#" className="text-muted-foreground hover:text-foreground">
+                <Icons.Twitter className="w-5 h-5" />
+              </a>
+              <a href="#" className="text-muted-foreground hover:text-foreground">
+                <Icons.Github className="w-5 h-5" />
+              </a>
+              <a href="#" className="text-muted-foreground hover:text-foreground">
+                <Icons.Linkedin className="w-5 h-5" />
+              </a>
+            </div>
+          </div>
+        </div>
+        <div className="mt-12 pt-8 border-t text-center text-muted-foreground">
+          <p>&copy; 2024 SuperApp. All rights reserved.</p>
+        </div>
+      </div>
+    </footer>
+  );
+}
+/// END Footer`
+      }
+    },
+    {
+      type: 'content_block_stop',
+      metadata: {
+        componentId: 'comp_footer',
+        componentName: 'Footer',
+        position: 'footer',
+        isComplete: true,
+        isCompoundComplete: true,
+        isCritical: true
+      }
+    },
+    {
+      type: 'message_stop'
+    }
+  ]
+};
+
+export function LivePreviewTestPage() {
+  const [selectedTest, setSelectedTest] = useState('singleComponent');
+  const [registry, setRegistry] = useState(new Map());
+  const [streamingStates, setStreamingStates] = useState(new Map());
+  const [isStreaming, setIsStreaming] = useState(false);
+  console.log('LivePreviewTestPage rendered');
+
+  useEffect(() => {
+    const handleStreamDelta = (event) => {
+      const { type, metadata, delta } = event.detail;
+      const { componentId, componentName, position } = metadata;
+
+      if (type === 'content_block_start') {
+        console.log('content_block_start event received:', metadata);
+        setIsStreaming(true);
+        setStreamingStates(prev => {
+          const next = new Map(prev);
+          next.set(componentId, { isStreaming: true });
+          return next;
+        });
+        setRegistry(prev => {
+          const next = new Map(prev);
+          next.set(componentId, {
+            name: componentName,
+            position,
+            code: ''
+          });
+          return next;
+        });
+      } else if (type === 'content_block_delta' && delta?.text) {
+        console.log('content_block_delta event received:', metadata, delta);
+        setRegistry(prev => {
+          const next = new Map(prev);
+          const component = next.get(componentId) || { name: componentName, position, code: '' };
+          next.set(componentId, {
+            ...component,
+            code: component.code + delta.text
+          });
+          return next;
+        });
+      } else if (type === 'content_block_stop') {
+        console.log('content_block_stop event received:', metadata);
+        setStreamingStates(prev => {
+          const next = new Map(prev);
+          next.set(componentId, { isStreaming: false });
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener('stream_delta', handleStreamDelta);
+    return () => {
+      window.removeEventListener('stream_delta', handleStreamDelta);
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('LivePreviewTestPage - registry updated:', registry);
+  }, [registry]);
+
+  return (
+    <div className="container mx-auto p-4 space-y-8">
+      <div>
+        <div>
+          <div>Live Preview Test Page</div>
+          <div>Test different component streaming scenarios</div>
+        </div>
+        <div>
+          <div className="space-y-4">
+            <div className="flex gap-4">
+              {Object.keys(TEST_PROMPTS).map(key => (
+                <Button
+                  key={key}
+                  variant={key === 'singleComponent' ? 'default' : 'outline'}
+                >
+                  {key}
+                </Button>
+              ))}
+            </div>
+            <div data-testid="live-preview">
+              <SimpleLivePreview 
+                registry={{ components: registry }}
+                streamingStates={streamingStates}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default LivePreviewTestPage; 

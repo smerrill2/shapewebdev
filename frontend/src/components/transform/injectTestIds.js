@@ -6,63 +6,100 @@ import generate from '@babel/generator';
 /**
  * Adds a data-testid to the root JSX element if one does not exist.
  * @param {string} code - The code to transform
- * @param {string} testId - The test ID to add
+ * @param {Object} options - The options object
+ * @param {string} [options.testId] - The test ID to add
  * @returns {string} - The transformed code
  */
-export function injectTestIds(code, testId) {
+export function injectTestIds(code, options = {}) {
   if (!code || typeof code !== 'string' || code.trim() === '') {
     return '';
   }
 
   try {
+    // If there's already a data-testid, don't add another one
+    if (code.includes('data-testid=')) {
+      return code;
+    }
+
+    // Extract component name for default testId
+    let testId = options.testId;
+    if (!testId) {
+      const functionMatch = code.match(/(?:function|const|let)\s+([A-Z][A-Za-z0-9]*)/);
+      testId = functionMatch ? functionMatch[1].toLowerCase() : 'component';
+    }
+
+    // Check if code contains JSX
+    if (!code.includes('return') || !/<[A-Za-z]/.test(code)) {
+      console.error('Error in injectTestIds: No JSX found in code');
+      return code;
+    }
+
     // Parse the code into an AST
     const ast = parse(code, {
       sourceType: 'module',
-      plugins: ['jsx', 'typescript']
+      plugins: ['jsx']
     });
 
-    let componentName = null;
-    let hasExistingTestId = false;
+    // Track if we've added a testId
+    let hasAddedTestId = false;
 
+    // Traverse the AST and add testId to the first JSX element in a return statement
     traverse(ast, {
-      FunctionDeclaration(path) {
-        // Identify the component name (for fallback testId)
-        if (path.node.id && /^[A-Z]/.test(path.node.id.name)) {
-          componentName = path.node.id.name;
-        }
-      },
-      VariableDeclarator(path) {
-        // Similarly handle `const SomeComponent = () => { ... }`
-        if (path.node.id && /^[A-Z]/.test(path.node.id.name)) {
-          componentName = path.node.id.name;
-        }
-      },
-      JSXElement(path) {
-        // Check if this is the "root" element returned by the function
-        if (isRootElement(path)) {
-          const existingTestIdAttr = path.node.openingElement.attributes.find(
-            attr => attr.type === 'JSXAttribute' && attr.name.name === 'data-testid'
+      ReturnStatement(path) {
+        if (hasAddedTestId) return;
+
+        const argument = path.node.argument;
+        if (t.isJSXElement(argument)) {
+          // Wrap the JSX in parentheses if not already wrapped
+          path.node.argument = t.parenthesizedExpression(argument);
+          
+          const openingElement = argument.openingElement;
+          const hasTestId = openingElement.attributes.some(
+            attr => t.isJSXAttribute(attr) && attr.name.name === 'data-testid'
           );
-          if (existingTestIdAttr) {
-            hasExistingTestId = true;
-          } else {
-            // Add new data-testid
-            const finalTestId = testId || (componentName ? componentName.toLowerCase() : 'component');
-            path.node.openingElement.attributes.push(
-              t.jsxAttribute(t.jsxIdentifier('data-testid'), t.stringLiteral(finalTestId))
+
+          if (!hasTestId) {
+            openingElement.attributes.push(
+              t.jsxAttribute(
+                t.jsxIdentifier('data-testid'),
+                t.stringLiteral(testId)
+              )
             );
+            hasAddedTestId = true;
+          }
+        } else if (t.isParenthesizedExpression(argument) && t.isJSXElement(argument.expression)) {
+          const openingElement = argument.expression.openingElement;
+          const hasTestId = openingElement.attributes.some(
+            attr => t.isJSXAttribute(attr) && attr.name.name === 'data-testid'
+          );
+
+          if (!hasTestId) {
+            openingElement.attributes.push(
+              t.jsxAttribute(
+                t.jsxIdentifier('data-testid'),
+                t.stringLiteral(testId)
+              )
+            );
+            hasAddedTestId = true;
           }
         }
       }
     });
 
-    // Generate code back from AST
-    let output = generate(ast, {}, code).code;
+    // Generate the code back from the AST
+    const output = generate(ast, {
+      retainLines: true,
+      compact: false,
+      jsescOption: {
+        quotes: 'double'
+      }
+    });
 
-    // NOTE: We do NOT add a final render call or import React here,
-    // because applyTransformations.js already handles that.
+    // Ensure semicolon after return statement
+    let result = output.code;
+    result = result.replace(/return\s*\([^;]+\)(?!\s*;)/g, '$&;');
 
-    return output;
+    return result;
   } catch (error) {
     console.error('Error in injectTestIds:', error);
     return code;

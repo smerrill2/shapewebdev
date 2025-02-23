@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { SimpleLivePreview } from '../SimpleLivePreview';
 import { LivePreviewTestPage } from '../LivePreviewTestPage';
-import { cleanCodeForLive } from '../utils/babelTransformations';
+import { cleanCode } from '../transform/cleanCode';
 import { TextEncoder, TextDecoder } from 'util';
 
 // Mock react-live
@@ -194,7 +194,7 @@ describe('LivePreview Tests', () => {
   describe('Code Transformation Tests', () => {
     it('should properly transform component code', () => {
       const inputCode = 'function Button() { return <button>Test</button>; }';
-      const transformedCode = cleanCodeForLive(inputCode);
+      const transformedCode = cleanCode(inputCode);
       
       expect(transformedCode).toContain('React.createElement');
       expect(transformedCode).toContain('button');
@@ -215,7 +215,7 @@ describe('LivePreview Tests', () => {
         }
       `;
       
-      const transformedCode = cleanCodeForLive(inputCode);
+      const transformedCode = cleanCode(inputCode);
       
       expect(transformedCode).toContain('React.createElement');
       expect(transformedCode).toContain('className');

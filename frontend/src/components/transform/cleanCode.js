@@ -24,39 +24,41 @@ export function cleanCode(code) {
     const endIndex = code.indexOf(endMatch[0]);
     let componentCode = code.substring(startIndex, endIndex).trim();
 
-    // 3. Preserve imports
+    // 3. Extract existing imports
     const imports = [];
-    const importRegex = /import\s+(?:[^;]+)\s+from\s+['"][^'"]+['"];?/g;
+    const importRegex = /^import.*?;$/gm;
     let match;
-    while ((match = importRegex.exec(componentCode)) !== null) {
+    while ((match = importRegex.exec(code)) !== null) {
       imports.push(match[0]);
     }
 
-    // 4. Clean the component code
-    componentCode = componentCode.replace(importRegex, '').trim();
-
-    // 5. Ensure React import
-    if (!imports.includes('import React from "react"')) {
+    // 4. Add React import if not present
+    if (!imports.some(imp => imp.includes('import React'))) {
       imports.unshift('import React from "react";');
     }
 
-    // 6. Preserve or add test ID
+    // 5. Check for existing testId
     const testIdMatch = componentCode.match(/data-testid=["']([^"']+)["']/);
     const testId = testIdMatch ? testIdMatch[1] : componentName.toLowerCase();
 
-    // 7. Check for render call
-    const hasRenderCall = /\(\s*\)\s*=>\s*</.test(componentCode);
+    // 6. Clean up any React imports or render calls from component code
+    componentCode = componentCode
+      .replace(/^import\s+React.*?;\n?/m, '')
+      .replace(/\/\/\s*React-Live.*$/m, '')
+      .replace(/\(\s*\)\s*=>\s*<.*?\/?>.*$/m, '')
+      .trim();
 
-    // 8. Reconstruct the code
-    let finalCode = imports.join('\n') + '\n\n' + componentCode;
-
-    // 9. Add render call if missing
-    if (!hasRenderCall) {
-      finalCode = finalCode.replace(/export\s+default\s+[^;]+;?/, '');
-      finalCode += `\n\n// React-Live will evaluate the last expression\n() => <${componentName}${!testIdMatch ? ` data-testid="${testId}"` : ''} />`;
+    // 7. Add render call if not present and no testId exists
+    if (!testIdMatch && !componentCode.includes('() =>')) {
+      componentCode = `${componentCode}\n\n// React-Live will evaluate the last expression\n() => <${componentName} data-testid="${testId}" />`;
     }
 
-    return finalCode;
+    // 8. Combine everything
+    return [
+      ...imports,
+      '',
+      componentCode
+    ].join('\n');
   } catch (error) {
     console.error('Error in cleanCode:', error);
     return code;
@@ -66,34 +68,41 @@ export function cleanCode(code) {
 /**
  * Clean up code for live preview with proper handling of markers and test IDs
  * @param {string} code - The code to clean
+ * @param {string} [componentName] - Expected component name for validation
  * @returns {string} - The cleaned code
  */
 export function cleanCodeForLive(code, componentName) {
-  // Normalize line endings
-  code = code.replace(/\r\n/g, '\n');
+  if (!code || typeof code !== 'string') return '';
 
-  // Handle partial streaming
-  const hasStartMarker = /\/\/\/\s*START\s+[A-Za-z]/.test(code);
-  const hasEndMarker = /\/\/\/\s*END\s+[A-Za-z]/.test(code);
-  
-  if (hasStartMarker && !hasEndMarker) {
-    return ''; // Return empty string to indicate incomplete code
-  }
+  try {
+    // Normalize line endings
+    code = code.replace(/\r\n/g, '\n');
 
-  // Extract code between START and END markers with improved regex
-  const markerMatch = code.match(/\/\/\/\s*START\s+([A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9]*)*(?:Section|Layout|Component)?)\s*(?:position=([a-z]+))?\s*\n([\s\S]*?)\/\/\/\s*END\s+\1\s*(?:\n|$)/);
-  
-  if (markerMatch) {
-    const [_, extractedName, position = 'main', componentCode] = markerMatch;
+    // Handle partial streaming
+    const hasStartMarker = /\/\/\/\s*START\s+[A-Za-z]/.test(code);
+    const hasEndMarker = /\/\/\/\s*END\s+[A-Za-z]/.test(code);
     
-    // Validate component name if provided
-    if (componentName && extractedName !== componentName) {
-      console.warn(`⚠️ Component name mismatch: expected ${componentName}, got ${extractedName}`);
+    if (hasStartMarker && !hasEndMarker) {
+      return ''; // Return empty string to indicate incomplete code
     }
-    
-    code = componentCode;
-  }
 
-  // Clean up the code
-  return cleanCode(code);
+    // Extract code between START and END markers with improved regex
+    const markerMatch = code.match(/\/\/\/\s*START\s+([A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9]*)*(?:Section|Layout|Component)?)\s*(?:position=([a-z]+))?\s*\n([\s\S]*?)\/\/\/\s*END\s+\1\s*(?:\n|$)/);
+    
+    if (markerMatch) {
+      const [_, extractedName, position = 'main', componentCode] = markerMatch;
+      
+      // Validate component name if provided
+      if (componentName && extractedName !== componentName) {
+        console.warn(`Component name mismatch: expected ${componentName}, got ${extractedName}`);
+      }
+      
+      return cleanCode(componentCode);
+    }
+
+    return cleanCode(code);
+  } catch (error) {
+    console.error('Error in cleanCodeForLive:', error);
+    return '';
+  }
 } 

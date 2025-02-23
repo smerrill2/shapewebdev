@@ -1,29 +1,40 @@
 module.exports = {
+  // The root directories for tests
+  roots: ['<rootDir>/frontend/src', '<rootDir>/backend'],
+  
+  // Test environment
   testEnvironment: 'jsdom',
-  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
-  moduleNameMapper: {
-    '^@/components/(.*)$': '<rootDir>/frontend/src/components/$1',
-    '^@/lib/(.*)$': '<rootDir>/frontend/src/lib/$1',
-    '^@/utils/(.*)$': '<rootDir>/frontend/src/utils/$1',
-    '\\.(css|less|scss|sass)$': 'identity-obj-proxy'
-  },
+  
+  // File extensions Jest will look for
+  moduleFileExtensions: ['js', 'jsx', 'json', 'node'],
+  
+  // Test match patterns
   testMatch: [
-    '<rootDir>/frontend/src/**/__tests__/**/*.{js,jsx,ts,tsx}',
-    '<rootDir>/frontend/src/**/*.{spec,test}.{js,jsx,ts,tsx}',
-    '<rootDir>/backend/**/__tests__/**/*.{js,jsx,ts,tsx}',
-    '<rootDir>/backend/**/*.{spec,test}.{js,jsx,ts,tsx}'
+    '**/__tests__/**/*.[jt]s?(x)',
+    '**/?(*.)+(spec|test).[jt]s?(x)'
   ],
+  
+  // Transform files with babel-jest
   transform: {
-    '^.+\\.(js|jsx|ts|tsx)$': ['babel-jest', {
-      presets: [
-        ['@babel/preset-env', { targets: { node: 'current' } }],
-        ['@babel/preset-react', { runtime: 'automatic' }]
-      ]
-    }]
+    '^.+\\.(js|jsx)$': ['babel-jest', { configFile: './.babelrc' }]
   },
+  
+  // Don't transform node_modules
   transformIgnorePatterns: [
-    '/node_modules/',
-    '^.+\\.module\\.(css|sass|scss)$'
+    '/node_modules/(?!(@babel/runtime)/)'
   ],
-  moduleFileExtensions: ['js', 'jsx', 'json', 'node']
+  
+  // Collect coverage from these directories
+  collectCoverageFrom: [
+    'frontend/src/**/*.{js,jsx}',
+    'backend/**/*.js',
+    '!**/node_modules/**',
+    '!**/vendor/**'
+  ],
+  
+  // Verbose output for better debugging
+  verbose: true,
+  
+  // Setup files to run before tests
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js']
 }; 
